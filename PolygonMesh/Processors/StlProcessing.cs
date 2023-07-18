@@ -39,7 +39,10 @@ namespace MatterHackers.PolygonMesh.Processors
 {
 	public static class StlProcessing
 	{
-		public static bool Save(this Mesh meshToSave, string fileName, CancellationToken cancellationToken, MeshOutputSettings outputInfo = null)
+		public static bool Save(this Mesh meshToSave,
+			string fileName,
+			CancellationToken cancellationToken,
+			MeshOutputSettings outputInfo = null)
 		{
 			using (var file = new FileStream(fileName, FileMode.Create, FileAccess.Write))
 			{
@@ -385,7 +388,10 @@ namespace MatterHackers.PolygonMesh.Processors
 			}
 
 			time.Stop();
-			Debug.WriteLine(string.Format("STL Load in {0:0.00}s", time.Elapsed.TotalSeconds));
+            if (time.Elapsed.TotalSeconds > 1)
+            {
+                Debug.WriteLine($"STL Load Time: {time.Elapsed.TotalSeconds.ToString("0.00")} seconds");
+            }
 
 			stlStream.Close();
 			return mesh;

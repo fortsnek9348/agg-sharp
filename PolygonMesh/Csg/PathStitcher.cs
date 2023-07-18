@@ -28,7 +28,9 @@ either expressed or implied, of the FreeBSD Project.
 */
 
 using System.Collections.Generic;
+using ClipperLib;
 using MatterHackers.DataConverters2D;
+using MatterHackers.Agg.QuadTree;
 using MatterHackers.VectorMath;
 
 namespace MatterHackers.PolygonMesh.Processors
@@ -50,7 +52,7 @@ namespace MatterHackers.PolygonMesh.Processors
 
 			// only a top
 			if ((bottomLoop == null || bottomLoop.Count == 0)
-				&& topLoop.Count > 0)
+				&& topLoop?.Count > 0)
 			{
 				// if there is no bottom than we need to create  bottom
 				return CreateBottom(topLoop, topHeight, scaling);
@@ -58,24 +60,38 @@ namespace MatterHackers.PolygonMesh.Processors
 
 			// simple bottom and top
 			if (bottomLoop.Count == 1
-				&& topLoop.Count == 1
-				&& bottomLoop[0].Count == topLoop[0].Count)
+				&& topLoop.Count == 1)
 			{
-				var mesh = CreateSimpleWall(bottomLoop[0], bottomHeight * 1000, topLoop[0], topHeight * 1000);
+				Mesh mesh = null;
+				if (bottomLoop[0].Count == topLoop[0].Count)
+				{
+					mesh = CreateSimpleWall(bottomLoop[0], bottomHeight * 1000, topLoop[0], topHeight * 1000);
+				}
+				else
+				{
+					mesh = Stitch2SingleWalls(bottomLoop[0], bottomHeight * 1000, topLoop[0], topHeight * 1000);
+				}
+
 				mesh.Transform(Matrix4X4.CreateScale(1 / scaling));
 				return mesh;
 			}
 
 			var all = new Polygons();
-			all.AddRange(bottomLoop);
-			all.AddRange(topLoop);
+			if (bottomLoop != null)
+			{
+				all.AddRange(bottomLoop);
+			}
+			if (topLoop != null)
+			{
+				all.AddRange(topLoop);
+			}
 			all = all.GetCorrectedWinding();
 
 			var bevelLoop = all.CreateVertexStorage().TriangulateFaces();
 
 			for (var i = 0; i < bevelLoop.Vertices.Count; i++)
 			{
-				bevelLoop.Vertices[i] = bevelLoop.Vertices[i] + new Vector3Float(0, 0, 16);
+				bevelLoop.Vertices[i] = bevelLoop.Vertices[i] + new Vector3Float(0, 0, bottomHeight);
 			}
 
 			return bevelLoop;
@@ -90,6 +106,83 @@ namespace MatterHackers.PolygonMesh.Processors
 		{
 			var mesh = path.CreateVertexStorage(scaling).TriangulateFaces(zHeight: bottomHeight);
 			mesh.ReverseFaces();
+			return mesh;
+		}
+
+		public static (int indexA, int indexB) BestStartIndices(Polygon loopA, Polygon loopB)
+		{
+			var bestDistance = double.MaxValue;
+			var bestIndexA = 0;
+			var bestIndexB = 0;
+			for (var indexA = 0; indexA < loopA.Count; indexA++)
+			{
+				for (var indexB = 0; indexB < loopB.Count; indexB++)
+				{
+					var distance = (loopA[indexA] - loopB[indexB]).LengthSquared();
+					if (distance < bestDistance)
+					{
+						bestDistance = distance;
+						bestIndexA = indexA;
+						bestIndexB = indexB;
+					}
+				}
+			}
+
+			return (bestIndexA, bestIndexB);
+		}
+
+		private static Mesh Stitch2SingleWalls(Polygon loopA, double heightA, Polygon loopB, double heightB)
+		{
+			var mesh = new Mesh();
+
+			var (startIndexA, startIndexB) = BestStartIndices(loopA, loopB);
+
+			var curIndexA = startIndexA;
+			var curIndexB = startIndexB;
+			var loopedA = false;
+			var loopedB = false;
+			do
+			{
+				var nextIndexA = (curIndexA + 1) % loopA.Count;
+				var nextIndexB = (curIndexB + 1) % loopB.Count;
+
+				var segmentCurAToNextB = new Polygon() { loopA[curIndexA], loopB[nextIndexB] };
+				var lengthCurAToNextB = segmentCurAToNextB.LengthSquared(false);
+                // make sure this segments does not intersect either loop
+                var intersectsWithA = loopA.FindIntersection(loopA[curIndexA], loopB[nextIndexB]) == Agg.QuadTree.Intersection.Intersect;
+                
+                var segmentCurBToNextA = new Polygon() { loopB[curIndexB], loopA[nextIndexA] };
+				var lengthCurBToNextA = segmentCurBToNextA.LengthSquared();
+				// make sure this segments does not intersect either loop
+
+				if ((lengthCurAToNextB > lengthCurBToNextA && !loopedA && intersectsWithA)
+					|| loopedB)
+				{
+					mesh.CreateFace(new Vector3[]
+					{
+						new Vector3(loopA[curIndexA].X, loopA[curIndexA].Y, heightA),
+						new Vector3(loopA[nextIndexA].X, loopA[nextIndexA].Y, heightA),
+						new Vector3(loopB[curIndexB].X, loopB[curIndexB].Y, heightB),
+					});
+
+					curIndexA = nextIndexA;
+					loopedA = curIndexA == startIndexA;
+				}
+				else
+				{
+					mesh.CreateFace(new Vector3[]
+					{
+						new Vector3(loopA[curIndexA].X, loopA[curIndexA].Y, heightA),
+						new Vector3(loopB[nextIndexB].X, loopB[nextIndexB].Y, heightB),
+						new Vector3(loopB[curIndexB].X, loopB[curIndexB].Y, heightB),
+					});
+
+					curIndexB = nextIndexB;
+					loopedB = curIndexB == startIndexB;
+				}
+			} while (curIndexA != startIndexA || curIndexB != startIndexB);
+
+
 			return mesh;
 		}
 
@@ -115,5 +208,32 @@ namespace MatterHackers.PolygonMesh.Processors
 
 			return mesh;
 		}
+
+		public static int GetPolygonToAdvance(Polygon outerLoop, int outerIndex, Polygon innerLoop, int innerIndex)
+		{
+			// given the start, find the closest next point along either polygon to move to
+			var outerStart = outerLoop[outerIndex];
+			var outerNextIndex = outerIndex + 1 % outerLoop.Count;
+			var outerNext = outerLoop[outerNextIndex];
+            
+			var innerStart = innerLoop[innerIndex];
+			var innerNextIndex = innerIndex + 1 % innerLoop.Count;
+			var innerNext = innerLoop[innerNextIndex];
+
+			var distanceToInnerNext = (innerNext - outerStart).LengthSquared();
+			var distanceToOuterNext = (innerStart - outerNext).LengthSquared();
+            
+            if (distanceToInnerNext < distanceToOuterNext
+                && !innerLoop.SegmentTouching(outerStart, innerNext))
+			{
+                // check if segment innerNext - outerStart crosses any other line segments
+                return 1;
+            }
+            else
+			{
+                // check if segment innerStart - outerNext crosses any other line segments
+                return 0;
+            }
+        }
 	}
 }

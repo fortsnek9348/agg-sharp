@@ -1,6 +1,6 @@
+using MatterHackers.Agg.SvgTools;
 using MatterHackers.VectorMath;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 //----------------------------------------------------------------------------
 // Anti-Grain Geometry - Version 2.4
@@ -20,8 +20,8 @@ using Newtonsoft.Json.Linq;
 //          mcseemagg@yahoo.com
 //          http://www.antigrain.com
 //----------------------------------------------------------------------------
-using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 
 namespace MatterHackers.Agg.VertexSource
@@ -153,14 +153,9 @@ namespace MatterHackers.Agg.VertexSource
 				return ShapePath.FlagsAndCommand.Stop;
 			}
 
-			public void remove_all()
+			public void Clear()
 			{
 				numVertices = 0;
-			}
-
-			public int size()
-			{
-				return numVertices;
 			}
 
 			public void swap_vertices(int v1, int v2)
@@ -208,26 +203,90 @@ namespace MatterHackers.Agg.VertexSource
 				}
 			}
 
-			public bool Contains(double x, double y)
-			{
-				foreach (var item in vertexData)
-				{
-					if (item.position.X < x + .001
-						&& item.position.X > x - .001
-						&& item.position.Y < y + .001
-						&& item.position.Y > y - .001)
-					{
-						return true;
-					}
-				}
+            /// <summary>
+            /// Determines if the given point lies within, on, or outside the polygon defined by vertex data.
+            /// Based on "The Point in Polygon Problem for Arbitrary Polygons" by Hormann & Agathos.
+            /// </summary>
+            /// <param name="pointToCheck">The point to check.</param>
+            /// <returns>
+            /// 0 if point is outside the polygon, 
+            /// +1 if point is inside the polygon, 
+            /// -1 if point is on the polygon boundary.
+            /// </returns>
+            public int CheckPointInPolygon(Vector2 pointToCheck)
+            {
+                int pointPosition = 0;
+                var vertexCount = vertexData.Length;
 
-				return false;
-			}
-		}
+                // If the polygon has less than 3 vertices, it's not valid, so the point is outside.
+                if (vertexCount < 3)
+                {
+                    return 0;
+                }
 
-		#endregion InternalVertexStorage
+                var currentVertex = vertexData[0];
+                for (int i = 1; i <= vertexCount; ++i)
+                {
+                    var nextVertex = (i == vertexCount ? vertexData[0] : vertexData[i]);
 
-		private int iteratorIndex;
+                    if (nextVertex.Y == pointToCheck.Y)
+                    {
+                        if ((nextVertex.X == pointToCheck.X) || (currentVertex.Y == pointToCheck.Y && ((nextVertex.X > pointToCheck.X) == (currentVertex.X < pointToCheck.X))))
+                        {
+                            return -1;
+                        }
+                    }
+
+                    if ((currentVertex.Y < pointToCheck.Y) != (nextVertex.Y < pointToCheck.Y))
+                    {
+                        if (currentVertex.X >= pointToCheck.X)
+                        {
+                            if (nextVertex.X > pointToCheck.X)
+                            {
+                                pointPosition = 1 - pointPosition;
+                            }
+                            else
+                            {
+                                double d = (double)(currentVertex.X - pointToCheck.X) * (nextVertex.Y - pointToCheck.Y) - (double)(nextVertex.X - pointToCheck.X) * (currentVertex.Y - pointToCheck.Y);
+
+                                if (d == 0)
+                                {
+                                    return -1;
+                                }
+                                else if ((d > 0) == (nextVertex.Y > currentVertex.Y))
+                                {
+                                    pointPosition = 1 - pointPosition;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if (nextVertex.X > pointToCheck.X)
+                            {
+                                double d = (double)(currentVertex.X - pointToCheck.X) * (nextVertex.Y - pointToCheck.Y) - (double)(nextVertex.X - pointToCheck.X) * (currentVertex.Y - pointToCheck.Y);
+
+                                if (d == 0)
+                                {
+                                    return -1;
+                                }
+                                else if ((d > 0) == (nextVertex.Y > currentVertex.Y))
+                                {
+                                    pointPosition = 1 - pointPosition;
+                                }
+                            }
+                        }
+                    }
+
+                    currentVertex = nextVertex;
+                }
+
+                return pointPosition;
+            }
+        }
+
+        #endregion InternalVertexStorage
+
+        private int iteratorIndex;
 		private VertexDataManager vertexDataManager;
 
 		public VertexStorage()
@@ -244,7 +303,7 @@ namespace MatterHackers.Agg.VertexSource
 		public VertexStorage(IVertexSource copyFrom)
 			: this()
 		{
-			foreach(var vertex in copyFrom.Vertices())
+			foreach (var vertex in copyFrom.Vertices())
 			{
 				this.Add(vertex.X, vertex.Y, vertex.command);
 			}
@@ -260,10 +319,20 @@ namespace MatterHackers.Agg.VertexSource
 			}
 		}
 
-		public bool Contains(double x, double y)
-		{
-			return vertexDataManager.Contains(x, y);
-		}
+        /// <summary>
+        /// Determines if the given point lies within, on, or outside the polygon defined by vertex data.
+        /// Based on "The Point in Polygon Problem for Arbitrary Polygons" by Hormann & Agathos.
+        /// </summary>
+        /// <param name="pointToCheck">The point to check.</param>
+        /// <returns>
+        /// 0 if point is outside the polygon, 
+        /// +1 if point is inside the polygon, 
+        /// -1 if point is on the polygon boundary.
+        /// </returns>
+        public int CheckPointInPolygon(Vector2 pointToCheck)
+        {
+            return vertexDataManager.CheckPointInPolygon(pointToCheck);
+        }
 
 		public static bool OldEqualsNewStyle(IVertexSource control, IVertexSource test, double maxError = .0001)
 		{
@@ -306,7 +375,7 @@ namespace MatterHackers.Agg.VertexSource
 			ShapePath.FlagsAndCommand otherFlagsAndCommand = test.vertex(out testX, out testY);
 
 			int index = 1;
-			if (controlFlagsAndCommand == otherFlagsAndCommand && controlX == testX && agg_basics.is_equal_eps(controlY, testY, .000000001))
+			if (controlFlagsAndCommand == otherFlagsAndCommand && controlX == testX && Util.is_equal_eps(controlY, testY, .000000001))
 			{
 				while (controlFlagsAndCommand != ShapePath.FlagsAndCommand.Stop)
 				{
@@ -765,316 +834,13 @@ namespace MatterHackers.Agg.VertexSource
 		{
 			get
 			{
-				return GetSvgDString();
+				return this.GetSvgDString();
 			}
 
 			set
 			{
-				ParseSvgDString(value);
+                this.ParseSvgDString(value); 
 			}
-		}
-
-
-		public string GetSvgDString()
-		{
-			var dstring = new StringBuilder();
-			var pendingPositions = new List<Vector2>();
-			foreach (var vertexData in this.Vertices())
-			{
-				if (vertexData.IsStop)
-				{
-					break;
-				}
-				else if (vertexData.IsMoveTo)
-				{
-					pendingPositions.Add(vertexData.position);
-				}
-				else if (vertexData.IsClose)
-				{
-					ReverseAndAdd(dstring, pendingPositions, closePath: true);
-				}
-				else // Assuming this is a line to. if (vertexData.IsLineTo)
-				{
-					pendingPositions.Add(vertexData.position);
-				}
-			}
-
-			if (pendingPositions.Count > 0)
-			{
-				ReverseAndAdd(dstring, pendingPositions);
-			}
-
-			return dstring.ToString();
-		}
-
-		private static void ReverseAndAdd(StringBuilder dstring, List<Vector2> pendingPositions, bool closePath = false)
-		{
-			// reverse the output so it is wound correctly for SVG
-			bool first = true;
-
-			for (int i = pendingPositions.Count - 1; i >= 0; i--)
-			{
-				if (first)
-				{
-					first = false;
-					dstring.Append($"M {pendingPositions[i].X:0.###} {pendingPositions[i].Y:0.###}");
-				}
-				else
-				{
-					dstring.Append($"L {pendingPositions[i].X:0.###} {pendingPositions[i].Y:0.###}");
-				}
-			}
-
-			if (closePath)
-			{
-				dstring.Append("Z");
-			}
-
-			pendingPositions.Clear();
-		}
-
-		public void ParseSvgDString(string dString)
-		{
-			bool fastSimpleNumbers = dString.IndexOf('e') == -1;
-			int parseIndex = 0;
-			int polyStartVertexSourceIndex = 0;
-			Vector2 polyStart = new Vector2();
-			Vector2 lastXY = new Vector2();
-			Vector2 curXY = new Vector2();
-
-			bool foundSecondControlPoint = false;
-			Vector2 secondControlPoint = new Vector2();
-
-			while (parseIndex < dString.Length)
-			{
-				Char command = dString[parseIndex];
-				switch (command)
-				{
-					case 'c': // curve to relative
-					case 'C': // curve to absolute
-						{
-							do
-							{
-								parseIndex++;
-								Vector2 controlPoint1;
-								controlPoint1.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								controlPoint1.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								foundSecondControlPoint = true;
-								secondControlPoint.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								secondControlPoint.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								if (command == 'c')
-								{
-									controlPoint1 += lastXY;
-									secondControlPoint += lastXY;
-									curXY += lastXY;
-								}
-
-								this.curve4(controlPoint1.X, controlPoint1.Y, secondControlPoint.X, secondControlPoint.Y, curXY.X, curXY.Y);
-
-								// if the next element is another coordinate than we just continue to add more curves.
-							} while(NextElementIsANumber(dString, parseIndex));
-						}
-						break;
-
-					case 's': // shorthand/smooth curveto relative
-					case 'S': // shorthand/smooth curveto absolute
-						{
-							do
-							{
-								Vector2 controlPoint = lastXY;
-
-								if (vertexDataManager.last_command() == ShapePath.FlagsAndCommand.Curve4)
-									{
-									controlPoint = Reflect(secondControlPoint, lastXY);
-								}
-								else
-								{
-									controlPoint = curXY;
-								}
-
-								parseIndex++;
-								
-								foundSecondControlPoint = true;
-
-								secondControlPoint.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								secondControlPoint.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-								if (command == 's')
-								{
-									secondControlPoint += lastXY;
-									curXY += lastXY;
-								}
-
-								this.curve4(controlPoint.X, controlPoint.Y, secondControlPoint.X, secondControlPoint.Y, curXY.X, curXY.Y);
-
-								// if the next element is another coordinate than we just continue to add more curves.
-							} while (NextElementIsANumber(dString, parseIndex));
-						}
-						break;
-
-					case 'h': // horizontal line to relative
-					case 'H': // horizontal line to absolute
-						parseIndex++;
-						curXY.Y = lastXY.Y;
-						curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-						if (command == 'h')
-						{
-							curXY.X += lastXY.X;
-						}
-
-						this.HorizontalLineTo(curXY.X);
-						break;
-
-					case 'l': // line to relative
-					case 'L': // line to absolute
-						do
-						{
-							parseIndex++;
-							curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-							curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-							if (command == 'l')
-							{
-								curXY += lastXY;
-							}
-
-							this.LineTo(curXY.X, curXY.Y);
-						} while (NextElementIsANumber(dString, parseIndex));
-						break;
-
-					case 'm': // move to relative
-					case 'M': // move to absolute
-						parseIndex++;
-						// svg fonts are stored cw and agg expects its shapes to be ccw.  cw shapes are holes.
-						// so we store the position of the start of this polygon so we can flip it when we close it.
-						polyStartVertexSourceIndex = this.size();
-						curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-						curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-						if (command == 'm')
-						{
-							curXY += lastXY;
-						}
-
-						this.MoveTo(curXY.X, curXY.Y);
-						polyStart = curXY;
-						break;
-
-					case 'q': // quadratic Bézier curveto relative
-					case 'Q': // quadratic Bézier curveto absolute
-						{
-							parseIndex++;
-							Vector2 controlPoint;
-							controlPoint.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-							controlPoint.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-							curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-							curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-							if (command == 'q')
-							{
-								controlPoint += lastXY;
-								curXY += lastXY;
-							}
-
-							this.curve3(controlPoint.X, controlPoint.Y, curXY.X, curXY.Y);
-						}
-						break;
-
-					case 't': // Shorthand/smooth quadratic Bézier curveto relative
-					case 'T': // Shorthand/smooth quadratic Bézier curveto absolute
-						parseIndex++;
-						curXY.X = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-						curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-						if (command == 't')
-						{
-							curXY += lastXY;
-						}
-
-						this.curve3(curXY.X, curXY.Y);
-						break;
-
-					case 'v': // vertical line to relative
-					case 'V': // vertical line to absolute
-						parseIndex++;
-						curXY.X = lastXY.X;
-						curXY.Y = agg_basics.ParseDouble(dString, ref parseIndex, fastSimpleNumbers);
-						if (command == 'v')
-						{
-							curXY.Y += lastXY.Y;
-						}
-
-						this.VerticalLineTo(curXY.Y);
-						break;
-
-					case 'z': // close path
-					case 'Z': // close path
-						parseIndex++;
-						curXY = lastXY; // value not used this is to remove an error.
-						//this.ClosePathStorage();
-						this.ClosePolygon();
-						// svg fonts are stored cw and agg expects its shapes to be ccw.  cw shapes are holes.
-						// We stored the position of the start of this polygon, now we flip it as we close it.
-						this.invert_polygon(polyStartVertexSourceIndex);
-						break;
-
-					case ' ':
-					case '\n': // some white space we need to skip
-					case '\r':
-						parseIndex++;
-						curXY = lastXY; // value not used this is to remove an error.
-						break;
-
-					default:
-						throw new NotImplementedException("unrecognized d command '" + command + "'.");
-				}
-
-				lastXY = curXY;
-			}
-		}
-
-		private static Vector2 Reflect(Vector2 point, Vector2 mirror)
-		{
-			double x, y, dx, dy;
-			dx = Math.Abs(mirror.X - point.X);
-			dy = Math.Abs(mirror.Y - point.Y);
-
-			if (mirror.X >= point.X)
-			{
-				x = mirror.X + dx;
-			}
-			else
-			{
-				x = mirror.X - dx;
-			}
-			if (mirror.Y >= point.Y)
-			{
-				y = mirror.Y + dy;
-			}
-			else
-			{
-				y = mirror.Y - dy;
-			}
-
-			return new Vector2(x, y);
-		}
-
-		HashSet<char> validNumberStartingCharacters = new HashSet<char> { '-', '.', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
-		HashSet<char> validSkipCharacters = new HashSet<char> { ' ', ',' };
-		private bool NextElementIsANumber(string dString, int parseIndex)
-		{
-			while (parseIndex < dString.Length
-				&& validSkipCharacters.Contains(dString[parseIndex]))
-			{
-				parseIndex++;
-			}
-
-			if (parseIndex < dString.Length
-				&& validNumberStartingCharacters.Contains(dString[parseIndex]))
-			{
-				return true;
-			}
-
-			return false;
 		}
 
 		public ShapePath.FlagsAndCommand prev_vertex(out double x, out double y)
@@ -1096,9 +862,10 @@ namespace MatterHackers.Agg.VertexSource
 			}
 		}
 
-		public void remove_all()
+		public void Clear()
 		{
-			vertexDataManager.remove_all(); iteratorIndex = 0;
+			vertexDataManager.Clear();
+			iteratorIndex = 0;
 		}
 
 		public virtual void rewind(int pathId)
@@ -1111,10 +878,6 @@ namespace MatterHackers.Agg.VertexSource
 			vertexDataManager = pathStorageToShareFrom.vertexDataManager;
 		}
 
-		public int size()
-		{
-			return vertexDataManager.size();
-		}
 		// Make path functions
 		//--------------------------------------------------------------------
 		public int start_new_path()

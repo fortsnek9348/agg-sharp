@@ -46,10 +46,11 @@ namespace MatterHackers.PolygonMesh.Csg
         private List<Mesh> transformedMeshes;
         private List<ITraceable> bvhAccelerators;
         private List<List<Plane>> plansByMesh;
-        private PlaneNormalXSorter planeSorter;
+        private SimilarPlaneFinder planeSorter;
         private Dictionary<Plane, (Matrix4X4 matrix, Matrix4X4 inverted)> transformTo0Planes;
+        private AxisAlignedBoundingBox activeOperationBounds;
 
-		public CsgBySlicing()
+        public CsgBySlicing()
 		{
 		}
 
@@ -86,14 +87,12 @@ namespace MatterHackers.PolygonMesh.Csg
 			Action<double, string> progressReporter,
 			CancellationToken cancellationToken)
 		{
-			totalOperations = 0;
 			transformedMeshes = new List<Mesh>();
 			bvhAccelerators = new List<ITraceable>();
 			foreach (var (mesh, matrix) in meshAndMatrix)
 			{
                 if (mesh != null)
                 {
-                    totalOperations += mesh.Faces.Count;
                     var meshCopy = mesh.Copy(cancellationToken);
                     transformedMeshes.Add(meshCopy);
                     meshCopy.Transform(matrix);
@@ -101,7 +100,37 @@ namespace MatterHackers.PolygonMesh.Csg
                 }
 			}
 
-			plansByMesh = new List<List<Plane>>();
+            activeOperationBounds = transformedMeshes[0].GetAxisAlignedBoundingBox().GetIntersection(transformedMeshes[1].GetAxisAlignedBoundingBox());
+            for (var meshIndex = 1; meshIndex < transformedMeshes.Count; meshIndex++)
+            {
+                for (var meshIndex2 = meshIndex + 1; meshIndex2 <= transformedMeshes.Count; meshIndex2++)
+                {
+                    var nextMeshIndex = meshIndex2 % transformedMeshes.Count;
+                    var nextIntersectionBounds = transformedMeshes[meshIndex].GetAxisAlignedBoundingBox()
+                        .GetIntersection(transformedMeshes[nextMeshIndex].GetAxisAlignedBoundingBox());
+                    activeOperationBounds.ExpandToInclude(nextIntersectionBounds);
+                }
+            }
+
+            activeOperationBounds.Expand(.1);
+
+            // figure out how many faces we will process
+            totalOperations = 0;
+            foreach (var mesh in transformedMeshes)
+            {
+                if (mesh != null)
+                {
+                    for (int faceIndex = 0; faceIndex < mesh.Faces.Count; faceIndex++)
+                    {
+                        if (InIntersection(mesh, faceIndex))
+                        {
+                            totalOperations++;
+                        }
+                    }
+                }
+            }
+            
+            plansByMesh = new List<List<Plane>>();
 			var uniquePlanes = new HashSet<Plane>();
 			for (int i = 0; i < transformedMeshes.Count; i++)
 			{
@@ -109,8 +138,7 @@ namespace MatterHackers.PolygonMesh.Csg
 				plansByMesh.Add(new List<Plane>());
 				for (int j = 0; j < transformedMeshes[i].Faces.Count; j++)
 				{
-					var face = mesh.Faces[j];
-					var cutPlane = new Plane(mesh.Vertices[face.v0].AsVector3(), mesh.Vertices[face.v1].AsVector3(), mesh.Vertices[face.v2].AsVector3());
+                    var cutPlane = mesh.GetPlane(j);
 					plansByMesh[i].Add(cutPlane);
 					uniquePlanes.Add(cutPlane);
 				}
@@ -121,16 +149,27 @@ namespace MatterHackers.PolygonMesh.Csg
                 }
 			}
 
-			planeSorter = new PlaneNormalXSorter(uniquePlanes);
+			planeSorter = new SimilarPlaneFinder(uniquePlanes);
 			transformTo0Planes = new Dictionary<Plane, (Matrix4X4 matrix, Matrix4X4 inverted)>();
 			foreach (var plane in uniquePlanes)
 			{
 				var matrix = SliceLayer.GetTransformTo0Plane(plane, 10000);
 				transformTo0Planes[plane] = (matrix, matrix.Inverted);
 			}
-		}
+        }
 
-		public Mesh Calculate(CsgModes operation,
+        private bool InIntersection(Mesh mesh, int faceIndex)
+        {
+            var faceAabb = mesh.Faces[faceIndex].GetAxisAlignedBoundingBox(mesh);
+            if (activeOperationBounds.Intersects(faceAabb))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        public Mesh Calculate(CsgModes operation,
 			Action<double, string> progressReporter,
 			CancellationToken cancellationToken)
         {
@@ -140,7 +179,7 @@ namespace MatterHackers.PolygonMesh.Csg
             var resultsMesh = new Mesh();
 
             // keep track of all the faces added by their plane
-            var coPlanarFaces = new CoPlanarFaces();
+            var coPlanarFaces = new CoPlanarFaces(planeSorter);
 
             for (var mesh1Index = 0; mesh1Index < transformedMeshes.Count; mesh1Index++)
             {
@@ -151,35 +190,44 @@ namespace MatterHackers.PolygonMesh.Csg
                     return null;
                 }
 
+                var slicePolygons = new Dictionary<Plane, Polygons>();
+
                 for (int faceIndex = 0; faceIndex < mesh1.Faces.Count; faceIndex++)
                 {
+                    var cutPlane = plansByMesh[mesh1Index][faceIndex];
+                    if (double.IsNaN(cutPlane.DistanceFromOrigin))
+                    {
+                        continue;
+                    }
+
+                    if (!InIntersection(mesh1, faceIndex))
+                    {
+                        if (operation == CsgModes.Union
+                            || (operation == CsgModes.Subtract && mesh1Index == 0))
+                        {
+                            resultsMesh.AddFaceCopy(mesh1, faceIndex);
+                            coPlanarFaces.StoreFaceAdd(cutPlane, mesh1Index, faceIndex, resultsMesh.Faces.Count - 1);
+                        }
+                        continue;
+                    }
+
                     var face = mesh1.Faces[faceIndex];
 
-                    var cutPlane = plansByMesh[mesh1Index][faceIndex];
-                    var totalSlice = new Polygons();
-                    var firstSlice = true;
-
                     var transformTo0Plane = transformTo0Planes[cutPlane].matrix;
-                    for (var sliceMeshIndex = 0; sliceMeshIndex < transformedMeshes.Count; sliceMeshIndex++)
-                    {
-                        if (mesh1Index == sliceMeshIndex)
-                        {
-                            continue;
-                        }
 
-                        var mesh2 = transformedMeshes[sliceMeshIndex];
-                        // calculate and add the PWN face from the loops
-                        var slice = SliceLayer.CreateSlice(mesh2, cutPlane, transformTo0Plane, bvhAccelerators[sliceMeshIndex]);
-                        if (firstSlice)
-                        {
-                            totalSlice = slice;
-                            firstSlice = false;
-                        }
-                        else
-                        {
-                            totalSlice = totalSlice.Union(slice);
-                        }
+                    Polygons totalSlice;
+                    
+                    // check if we have already calculated this exact plane
+                    if (slicePolygons.ContainsKey(cutPlane))
+                    {
+                        totalSlice = slicePolygons[cutPlane];
                     }
+                    else
+                    {
+                        totalSlice = GetTotalSlice(mesh1Index, cutPlane, transformTo0Plane);
+                        slicePolygons[cutPlane] = totalSlice;
+                    }
+                    
 
                     // now we have the total loops that this polygon can intersect from the other meshes
                     // make a polygon for this face
@@ -228,20 +276,22 @@ namespace MatterHackers.PolygonMesh.Csg
                     }
                     else
                     {
-                        var preAddCount = resultsMesh.Vertices.Count;
+                        var vertCountPreAdd = resultsMesh.Vertices.Count;
                         // mesh the new polygon and add it to the resultsMesh
-                        polygonShape.Vertices(1).TriangulateFaces(null, resultsMesh, 0, transformTo0Planes[cutPlane].inverted);
+                        polygonShape.AsVertices(1).TriangulateFaces(null, resultsMesh, 0, transformTo0Planes[cutPlane].inverted);
                         var postAddCount = resultsMesh.Vertices.Count;
 
-                        for (int addedIndex = preAddCount; addedIndex < postAddCount; addedIndex++)
+                        var polygonPlane = mesh1.GetPlane(faceIndex);
+
+                        // for every vertex that we just added
+                        for (int addedVertIndex = vertCountPreAdd; addedVertIndex < postAddCount; addedVertIndex++)
                         {
                             // TODO: map all the added vertices that can be back to the original polygon positions
                             for (int meshIndex = 0; meshIndex < transformedMeshes.Count; meshIndex++)
                             {
                                 var bvhAccelerator = bvhAccelerators[meshIndex];
                                 var mesh = transformedMeshes[meshIndex];
-                                var addedPosition = resultsMesh.Vertices[addedIndex];
-                                var touchingBvhItems = bvhAccelerator.GetTouching(new Vector3(addedPosition), .0001);
+                                var touchingBvhItems = bvhAccelerator.GetTouching(new Vector3(resultsMesh.Vertices[addedVertIndex]), .0001);
                                 foreach (var touchingBvhItem in touchingBvhItems)
                                 {
                                     if (touchingBvhItem is MinimalTriangle triangleShape)
@@ -252,11 +302,23 @@ namespace MatterHackers.PolygonMesh.Csg
                                         foreach (var sourceVertexIndex in sourceVertexIndices)
                                         {
                                             var sourcePosition = mesh.Vertices[sourceVertexIndex];
-                                            var deltaSquared = (addedPosition - sourcePosition).LengthSquared;
-                                            if (deltaSquared > 0 && deltaSquared < .00001)
+                                            var deltaSquared = (resultsMesh.Vertices[addedVertIndex] - sourcePosition).LengthSquared;
+                                            if (deltaSquared == 0)
                                             {
-                                                // add the vertex and set the face position index to the new vertex
-                                                resultsMesh.Vertices[addedIndex] = sourcePosition;
+                                                // do nothing it already matches
+                                            }
+                                            else if (deltaSquared < .00001)
+                                            {
+                                                // we found a vertex that this is equivalent to
+                                                // make it exactly the same
+                                                resultsMesh.Vertices[addedVertIndex] = sourcePosition;
+                                            }
+                                            else
+                                            {
+                                                // we did not find a matching vertex but we can still make sure
+                                                // the new vertex is on the right plane
+                                                var distanceToPlane = polygonPlane.GetDistanceFromPlane(resultsMesh.Vertices[addedVertIndex]);
+                                                resultsMesh.Vertices[addedVertIndex] -= new Vector3Float(polygonPlane.Normal * distanceToPlane);
                                             }
                                         }
                                     }
@@ -270,7 +332,7 @@ namespace MatterHackers.PolygonMesh.Csg
                         // keep track of the adds so we can process the coplanar faces after
                         for (int i = faceCountPreAdd; i < resultsMesh.Faces.Count; i++)
                         {
-                            coPlanarFaces.StoreFaceAdd(planeSorter, cutPlane, mesh1Index, faceIndex, i);
+                            coPlanarFaces.StoreFaceAdd(cutPlane, mesh1Index, faceIndex, i);
                             // make sure our added faces are the right direction
                             if (resultsMesh.Faces[i].normal.Dot(expectedFaceNormal) < 0)
                             {
@@ -278,9 +340,9 @@ namespace MatterHackers.PolygonMesh.Csg
                             }
                         }
                     }
-                    else // we did not add any faces but we will still keep track of this polygons plan
+                    else // we did not add any faces but we will still keep track of this polygons plane
                     {
-                        coPlanarFaces.StoreFaceAdd(planeSorter, cutPlane, mesh1Index, faceIndex, -1);
+                        coPlanarFaces.StoreFaceAdd(cutPlane, mesh1Index, faceIndex, -1);
                     }
 
                     ratioCompleted += amountPerOperation;
@@ -296,8 +358,38 @@ namespace MatterHackers.PolygonMesh.Csg
             // handle the co-planar faces
             ProcessCoplanarFaces(operation, resultsMesh, coPlanarFaces);
 
+            resultsMesh.MergeVertices(.01);
             resultsMesh.CleanAndMerge();
             return resultsMesh;
+        }
+
+        public Polygons GetTotalSlice(int meshIndexToIgnore, Plane cutPlane, Matrix4X4 transformTo0Plane, bool includeBehindThePlane = true)
+        {
+            var totalSlice = new Polygons();
+
+            var firstSlice = true;
+            for (var sliceMeshIndex = 0; sliceMeshIndex < transformedMeshes.Count; sliceMeshIndex++)
+            {
+                if (meshIndexToIgnore == sliceMeshIndex)
+                {
+                    continue;
+                }
+
+                var mesh2 = transformedMeshes[sliceMeshIndex];
+                // calculate and add the PWN face from the loops
+                var slice = SliceLayer.CreateSlice(mesh2, cutPlane, transformTo0Plane, bvhAccelerators[sliceMeshIndex], includeBehindThePlane);
+                if (firstSlice)
+                {
+                    totalSlice = slice;
+                    firstSlice = false;
+                }
+                else
+                {
+                    totalSlice = totalSlice.Union(slice);
+                }
+            }
+
+            return totalSlice;
         }
 
         private void ProcessCoplanarFaces(CsgModes operation, Mesh resultsMesh, CoPlanarFaces coPlanarFaces)
@@ -305,25 +397,41 @@ namespace MatterHackers.PolygonMesh.Csg
             var faceIndicesToRemove = new HashSet<int>();
             foreach (var plane in coPlanarFaces.Planes)
             {
-                var meshIndices = coPlanarFaces.MeshIndicesForPlane(plane);
+                var meshIndices = coPlanarFaces.MeshIndicesForPlane(plane).ToList();
+
+                if (operation == CsgModes.Union)
+                {
+                    var negativePlane = planeSorter.FindPlane(new Plane()
+                    {
+                        Normal = -plane.Normal,
+                        DistanceFromOrigin = -plane.DistanceFromOrigin,
+                    }, .02);
+
+                    if (negativePlane != null)
+                    {
+                        // add any negative faces
+                        meshIndices.AddRange(coPlanarFaces.MeshIndicesForPlane(negativePlane.Value));
+                    }
+                }
+
                 if (meshIndices.Count() > 1)
                 {
-                    // check if more than one mesh has this polygons on this plan
-                    var flattenedMatrix = transformTo0Planes[plane].matrix;
+                    // check if more than one mesh has this polygons on this plane
+                    var transformTo0Plane = transformTo0Planes[plane].matrix;
 
                     // depending on the operation add or remove polygons that are planar
                     switch (operation)
                     {
                         case CsgModes.Union:
-                            coPlanarFaces.UnionFaces(plane, transformedMeshes, resultsMesh, flattenedMatrix);
+                            coPlanarFaces.UnionFaces(plane, transformedMeshes, resultsMesh, transformTo0Plane, faceIndicesToRemove, this);
                             break;
 
                         case CsgModes.Subtract:
-                            coPlanarFaces.SubtractFaces(plane, transformedMeshes, resultsMesh, flattenedMatrix, faceIndicesToRemove);
+                            coPlanarFaces.SubtractFaces(plane, transformedMeshes, resultsMesh, transformTo0Plane, faceIndicesToRemove);
                             break;
 
                         case CsgModes.Intersect:
-                            coPlanarFaces.IntersectFaces(plane, transformedMeshes, resultsMesh, flattenedMatrix, faceIndicesToRemove);
+                            coPlanarFaces.IntersectFaces(plane, transformedMeshes, resultsMesh, transformTo0Plane, faceIndicesToRemove);
                             break;
                     }
 

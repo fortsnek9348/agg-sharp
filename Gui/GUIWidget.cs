@@ -25,6 +25,7 @@ using MatterHackers.Agg.Image;
 using MatterHackers.Agg.Transform;
 using MatterHackers.Agg.VertexSource;
 using MatterHackers.VectorMath;
+using Typography.OpenFont;
 using static System.Math;
 using static MatterHackers.Agg.Color;
 
@@ -86,7 +87,7 @@ namespace MatterHackers.Agg.UI
 		/// Take the larger of Fit or Stretch.
 		/// </summary>
 		MaxFitOrStretch = Fit | Stretch,
-		
+
 		/// <summary>
 		/// Take the lesser of the Fit or Stretch calculation
 		/// </summary>
@@ -305,7 +306,7 @@ namespace MatterHackers.Agg.UI
 		}
 
 		/// <summary>
-		/// Gets the boarder and padding scaled by the DeviceScale (used by the layout engine)
+		/// Gets the border and padding scaled by the DeviceScale (used by the layout engine)
 		/// </summary>
 		public BorderDouble DevicePadding
 		{
@@ -642,9 +643,26 @@ namespace MatterHackers.Agg.UI
 
 		public event EventHandler<KeyEventArgs> KeyUp;
 
-		public event EventHandler Closed;
+        public event EventHandler<object> ObjectSent;
 
-		public event EventHandler ParentChanged;
+        #region close events
+        /// <summary>
+		/// This is called when the user clicks the close button on the window.
+		/// </summary>
+        public event EventHandler<ShouldCloseEventArgs> ShouldClose;
+
+        /// <summary>
+		/// This is called before calling Closed and before any children are removed 
+		/// </summary>
+        public event EventHandler Closing2;
+        
+		/// <summary>
+		/// This is called after children have been removed for any last minute cleanup
+		/// </summary>
+		public event EventHandler Closed;
+        #endregion
+
+        public event EventHandler ParentChanged;
 
 		public event EventHandler FocusChanged;
 
@@ -1614,7 +1632,6 @@ namespace MatterHackers.Agg.UI
 		public virtual GuiWidget RemoveChild(int index)
 		{
 			GuiWidget childThatWasRemove = null;
-			int i = 0;
 			Children.Modify((list) =>
 			{
 				if (index < list.Count)
@@ -1991,11 +2008,6 @@ namespace MatterHackers.Agg.UI
 			{
 				LayoutCount++;
 
-				if ((LayoutCount % 11057) == 0)
-				{
-					int a = 0;
-				}
-
 				if (LayoutEngine != null)
 				{
 					using (LayoutLock())
@@ -2013,34 +2025,56 @@ namespace MatterHackers.Agg.UI
 			ParentChanged?.Invoke(this, e);
 		}
 
-		/// <summary>
-		/// This is called before the OnDraw method.
-		/// When overriding OnPaintBackground in a derived class it is not necessary to call the base class's OnPaintBackground.
-		/// </summary>
-		/// <param name="graphics2D">The graphics 2D this is being drawn onto.</param>
-		public virtual void OnDrawBackground(Graphics2D graphics2D)
+        public static void RenderBackground(Graphics2D graphics2D,
+			RectangleDouble bounds,
+			Color backgroundColor,
+			RadiusCorners cornerRadius,
+			double outlineWidth,
+			Color outlineColor)
 		{
-			var bounds = this.LocalBounds;
-			var rect = new RoundedRect(bounds.Left, bounds.Bottom, bounds.Right, bounds.Top);
-			rect.radius(BackgroundRadius.SW, BackgroundRadius.SE, BackgroundRadius.NE, BackgroundRadius.NW);
+            var rect = new RoundedRect(bounds.Left, bounds.Bottom, bounds.Right, bounds.Top);
+            rect.radius(cornerRadius.SW, cornerRadius.SE, cornerRadius.NE, cornerRadius.NW);
 
-			if (BackgroundColor.Alpha0To255 > 0)
-			{
-				graphics2D.Render(rect, BackgroundColor);
-			}
+            if (outlineColor.Alpha0To255 > 0 && outlineWidth > 0)
+            {
+                var stroke = outlineWidth * GuiWidget.DeviceScale;
 
-			if (BorderColor.Alpha0To255 > 0 && BackgroundOutlineWidth > 0)
-			{
-				var stroke = BackgroundOutlineWidth * GuiWidget.DeviceScale;
-				var expand = stroke / 2;
-				rect = new RoundedRect(bounds.Left + expand, bounds.Bottom + expand, bounds.Right - expand, bounds.Top - expand);
-				rect.radius(BackgroundRadius.SW, BackgroundRadius.SE, BackgroundRadius.NE, BackgroundRadius.NW);
+                if (backgroundColor.Alpha0To255 > 0)
+                {
+                    // inset the bounds and draw the background
+                    var insetBounds = bounds;
+                    insetBounds.Inflate(-stroke);
+                    var insetRect = new RoundedRect(insetBounds.Left, insetBounds.Bottom, insetBounds.Right, insetBounds.Top);
+                    insetRect.radius(cornerRadius.SW, cornerRadius.SE, cornerRadius.NE, cornerRadius.NW);
 
-				var rectOutline = new Stroke(rect, stroke);
+                    graphics2D.Render(insetRect, backgroundColor);
+                }
 
-				graphics2D.Render(rectOutline, BorderColor);
-			}
-		}
+                // and draw the border
+                var expand = stroke / 2;
+                rect = new RoundedRect(bounds.Left + expand, bounds.Bottom + expand, bounds.Right - expand, bounds.Top - expand);
+                rect.radius(cornerRadius.SW, cornerRadius.SE, cornerRadius.NE, cornerRadius.NW);
+
+                var rectOutline = new Stroke(rect, stroke);
+
+                graphics2D.Render(rectOutline, outlineColor);
+            }
+            else if (backgroundColor.Alpha0To255 > 0)
+            {
+                // only draw the background color
+                graphics2D.Render(rect, backgroundColor);
+            }
+        }
+
+        /// <summary>
+        /// This is called before the OnDraw method.
+        /// When overriding OnPaintBackground in a derived class it is not necessary to call the base class's OnPaintBackground.
+        /// </summary>
+        /// <param name="graphics2D">The graphics 2D this is being drawn onto.</param>
+        public virtual void OnDrawBackground(Graphics2D graphics2D)
+		{
+            RenderBackground(graphics2D, this.LocalBounds, BackgroundColor, BackgroundRadius, BackgroundOutlineWidth, BorderColor);
+        }
 
 		public static int DrawCount;
 		public static int LayoutCount;
@@ -2481,34 +2515,51 @@ namespace MatterHackers.Agg.UI
 				BreakInDebugger("You should put this close onto the UiThread.RunOnIdle so it can happen after the child list is unlocked.");
 			}
 
-			// Validate via OnClosing if SystemWindow.Close is called
-			if (this is SystemWindow systemWindow)
+			if (HasBeenClosed)
 			{
-				var closingArgs = new ClosingEventArgs();
-				systemWindow.OnClosing(closingArgs);
-
-				if (closingArgs.Cancel)
-				{
-					return;
-				}
+				// already closed don't need to do anything more
+				return;
 			}
 
-			if (!HasBeenClosed)
+			// Validate via OnClosing if this should close
+			var shouldCloseArgs = new ShouldCloseEventArgs();
+			OnShouldClose(shouldCloseArgs);
+
+			if (shouldCloseArgs.Cancel)
 			{
-				HasBeenClosed = true;
+				// exit without doing anything
+				return;
+			}
 
-				this.CloseChildren();
+			// we are closed, there is no turning back
+            HasBeenClosed = true;
+            
+			// let any listeners know we are closed before we remove our children
+            OnClosing2(null);
 
-				OnClosed(null);
-				if (Parent != null)
-				{
-					// This code will only execute if this is the actual widget we called close on (not a child of the widget we called close on).
-					Parent.RemoveChild(this);
-					this.Parent = null;
-				}
+			// close all the children
+			this.CloseChildren();
+
+			// let listeners know we are done closing
+			OnClosed(null);
+			if (Parent != null)
+			{
+				// This code will only execute if this is the actual widget we called close on (not a child of the widget we called close on).
+				Parent.RemoveChild(this);
+				this.Parent = null;
 			}
 		}
 
+		public virtual void OnShouldClose(ShouldCloseEventArgs e)
+		{
+			ShouldClose?.Invoke(this, e);
+		}
+
+        public virtual void OnClosing2(EventArgs eventArgs)
+        {
+            Closing2?.Invoke(this, eventArgs);
+        }
+        
 		public virtual void OnClosed(EventArgs e)
 		{
 			Closed?.Invoke(this, e);
@@ -2550,7 +2601,6 @@ namespace MatterHackers.Agg.UI
 
 			if (bPosition != mPosition)
 			{
-				int a = 0;
 			}
 
 			return mPosition;
@@ -3293,13 +3343,15 @@ namespace MatterHackers.Agg.UI
 			MouseLeave?.Invoke(this, mouseEvent);
 		}
 
-		public virtual void SendToChildren(object objectToRoute)
+		public void SendToChildren(object objectToRoute)
 		{
 			foreach (GuiWidget child in Children)
 			{
 				child.SendToChildren(objectToRoute);
 			}
-		}
+
+            ObjectSent?.Invoke(this, objectToRoute);
+        }
 
 		public class WidgetAndPosition
 		{

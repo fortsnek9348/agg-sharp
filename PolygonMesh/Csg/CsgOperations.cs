@@ -28,7 +28,11 @@ namespace MatterHackers.PolygonMesh.Csg
 			return Union(a, b, null, CancellationToken.None);
 		}
 
-		public static Mesh Union(Mesh a, Mesh b, Action<string, double> reporter, CancellationToken cancellationToken)
+		public static Mesh Union(Mesh a,
+			Mesh b,
+			Action<string, double> reporter,
+			CancellationToken cancellationToken,
+			Action<double, string> reportProgress = null)
 		{
 			if (a.Faces.Count == 0)
 			{
@@ -53,7 +57,6 @@ namespace MatterHackers.PolygonMesh.Csg
 				null,
 				1,
 				0,
-				null,
 				cancellationToken);
 		}
 
@@ -94,7 +97,6 @@ namespace MatterHackers.PolygonMesh.Csg
 				null,
 				1,
 				0,
-				null,
 				cancellationToken);
 		}
 
@@ -128,7 +130,6 @@ namespace MatterHackers.PolygonMesh.Csg
 				null,
 				1,
 				0,
-				null,
 				cancellationToken);
 		}
 
@@ -153,7 +154,6 @@ namespace MatterHackers.PolygonMesh.Csg
 				null,
 				1,
 				0,
-				null,
 				cancellationToken);
 
 			var intersect = BooleanProcessing.Do(a,
@@ -170,7 +170,6 @@ namespace MatterHackers.PolygonMesh.Csg
 				null,
 				1,
 				0,
-				null,
 				cancellationToken);
 
 			return (subtract, intersect);

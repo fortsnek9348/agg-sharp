@@ -39,6 +39,7 @@ using System.Threading.Tasks;
 using IxMilia.ThreeMf;
 using MatterHackers.Agg;
 using MatterHackers.Agg.UI;
+using MatterHackers.Agg.VertexSource;
 using MatterHackers.DataConverters3D.UndoCommands;
 using MatterHackers.Localizations;
 using MatterHackers.PolygonMesh;
@@ -230,6 +231,21 @@ namespace MatterHackers.DataConverters3D
 			}
 		}
 
+        /// <summary>
+		/// The vertex storage to use when an object is a path
+		/// </summary>
+		public VertexStorage VertexStorage { get; set; } = new VertexStorage();
+
+		public virtual IVertexSource GetVertexSource()
+        {
+            if (VertexStorage.Count > 0)
+            {
+				return VertexStorage;
+            }
+            
+			return null;
+        }
+
 		private object locker = new object();
 
 		[JsonIgnore]
@@ -298,9 +314,12 @@ namespace MatterHackers.DataConverters3D
 		public virtual bool Persistable { get; set; } = true;
 
 		[JsonIgnore]
-		public virtual bool Printable { get; set; } = true;
+		public virtual bool Printable
+		{
+			get => GetVertexSource()?.Vertices()?.Count() != 0;
+		}
 
-		public virtual bool Visible { get; set; } = true;
+        public virtual bool Visible { get; set; } = true;
 
 		public virtual bool CanApply
 		{
@@ -322,8 +341,9 @@ namespace MatterHackers.DataConverters3D
 		internal int RebuildLockCount { get; set; }
 
 		public bool Expanded { get; set; }
+		public static int MaxJsonDepth => 256;
 
-		private class Object3DRebuildLock : RebuildLock
+        private class Object3DRebuildLock : RebuildLock
 		{
 			public Object3DRebuildLock(IObject3D item)
 				: base(item)
@@ -477,86 +497,94 @@ namespace MatterHackers.DataConverters3D
 				cacheContext = new CacheContext();
 			}
 
-			switch (extension.ToUpper())
+			try
 			{
-				case ".MCX":
-					try
-					{
-						string json;
-						// check if the file is binary
-						if (IsBinaryMCX(stream))
+				switch (extension.ToUpper())
+				{
+					case ".MCX":
 						{
-							// it looks like a binary mcx file (which is a zip file). Load the contents
-							using (var archive = new ZipArchive(stream, ZipArchiveMode.Read))
+							string json;
+							// check if the file is binary
+							if (IsBinaryMCX(stream))
 							{
-								var sceneEntryName = archive.Entries.Where(e => e.Name.Contains("scene.mcx")).First().FullName;
-								json = new StreamReader(archive.GetEntry(sceneEntryName).Open()).ReadToEnd();
-							}
-						}
-						else
-						{
-							json = new StreamReader(stream).ReadToEnd();
-						}
-
-						// Load the meta file and convert MeshPath links into objects
-						var loadedItem = JsonConvert.DeserializeObject<Object3D>(
-							json,
-							new JsonSerializerSettings
-							{
-								ContractResolver = new IObject3DContractResolver(),
-								NullValueHandling = NullValueHandling.Ignore
-							});
-
-						loadedItem?.LoadMeshLinks(cancellationToken, cacheContext, progress);
-
-						return loadedItem;
-					}
-					catch
-					{
-					}
-					return null;
-
-				case ".STL":
-					var result = new Object3D();
-					result.SetMeshDirect(StlProcessing.Load(stream, cancellationToken, progress));
-					return result;
-
-				case ".AMF":
-					return AmfDocument.Load(stream, cancellationToken, progress);
-
-				case ".3MF":
-					{
-						var file = ThreeMfFile.Load(stream);
-						var object3D = new Object3D();
-						foreach (var model in file.Models)
-                        {
-							foreach (var item in model.Items)
-							{
-								if (item.Object is ThreeMfObject itemObject)
+								// it looks like a binary mcx file (which is a zip file). Load the contents
+								using (var archive = new ZipArchive(stream, ZipArchiveMode.Read))
 								{
-									var transform = item.Transform;
-									AddObject(object3D, itemObject, ToMatrix4X4(transform));
+									var sceneEntryName = archive.Entries.Where(e => e.Name.Contains("scene.mcx")).First().FullName;
+									json = new StreamReader(archive.GetEntry(sceneEntryName).Open()).ReadToEnd();
 								}
 							}
-                        }
+							else
+							{
+								json = new StreamReader(stream).ReadToEnd();
+							}
 
-						if (object3D?.Children.Count > 0)
-                        {
-							return object3D;
-                        }
+							// Load the meta file and convert MeshPath links into objects
+							var loadedItem = JsonConvert.DeserializeObject<Object3D>(
+								json,
+								new JsonSerializerSettings
+								{
+									ContractResolver = new IObject3DContractResolver(),
+									NullValueHandling = NullValueHandling.Ignore,
+									MaxDepth = MaxJsonDepth
+								});
 
+							loadedItem?.LoadMeshLinks(cancellationToken, cacheContext, progress);
+
+							return loadedItem;
+						}
+
+					case ".STL":
+						var result = new Object3D();
+						result.SetMeshDirect(StlProcessing.Load(stream, cancellationToken, progress));
+						return result;
+
+					case ".AMF":
+						return AmfDocument.Load(stream, cancellationToken, progress);
+
+					case ".3MF":
+						{
+							var file = ThreeMfFile.Load(stream);
+							var object3D = new Object3D();
+							foreach (var model in file.Models)
+							{
+								foreach (var item in model.Items)
+								{
+									if (item.Object is ThreeMfObject itemObject)
+									{
+										var transform = item.Transform;
+										AddObject(object3D, itemObject, ToMatrix4X4(transform));
+									}
+								}
+							}
+
+							if (object3D?.Children.Count > 0)
+							{
+								return object3D;
+							}
+
+							return null;
+						}
+
+					case ".OBJ":
+						return ObjSupport.Load(stream, progress);
+
+					default:
 						return null;
-					}
-
-				case ".OBJ":
-					return ObjSupport.Load(stream, progress);
-
-				default:
-					return null;
+				}
 			}
+            catch { }
+
+			return null;
 		}
 
-		public static bool Save(IObject3D item, string meshPathAndFileName, CancellationToken cancellationToken, MeshOutputSettings outputInfo = null, Action<double, string> reportProgress = null)
+		public static bool Save(IObject3D item,
+			string meshPathAndFileName,
+            bool mergeMeshes,
+			CancellationToken cancellationToken,
+			MeshOutputSettings outputInfo = null,
+			Action<double, string> reportProgress = null,
+			bool saveMultipleStls = false)
 		{
 			try
 			{
@@ -576,8 +604,45 @@ namespace MatterHackers.DataConverters3D
 					// return true;
 
 					case ".STL":
-						Mesh mesh = DoMergeAndTransform(item, outputInfo, cancellationToken);
-						return StlProcessing.Save(mesh, meshPathAndFileName, cancellationToken, outputInfo);
+						if (saveMultipleStls)
+						{
+                            bool success = true;
+                            foreach (var child in item.VisibleMeshes())
+                            {
+								var firstValidName = child.Name;
+								if (string.IsNullOrEmpty(firstValidName))
+								{
+                                    firstValidName = child.Parents().Where(i => !string.IsNullOrEmpty(i.Name)).FirstOrDefault().Name;
+									if (firstValidName == null)
+									{
+										Path.GetFileName(meshPathAndFileName);
+									}
+								}
+
+                                // remove any extension
+                                firstValidName = Path.GetFileNameWithoutExtension(firstValidName);
+                                var childMeshPathAndFileName = Path.Combine(Path.GetDirectoryName(meshPathAndFileName), firstValidName + ".stl");
+
+                                childMeshPathAndFileName = Util.GetNonCollidingFileName(childMeshPathAndFileName);
+
+                                if (mergeMeshes)
+                                {
+                                    outputInfo.CsgOptionState = MeshOutputSettings.CsgOption.DoCsgMerge;
+                                }
+                                Mesh mesh = DoMergeAndTransform(child, outputInfo, cancellationToken, reportProgress);
+                                success &= StlProcessing.Save(mesh, childMeshPathAndFileName, cancellationToken, outputInfo);
+                            }
+                            return success;
+                        }
+						else
+						{
+							if (mergeMeshes)
+							{
+								outputInfo.CsgOptionState = MeshOutputSettings.CsgOption.DoCsgMerge;
+							}
+							Mesh mesh = DoMergeAndTransform(item, outputInfo, cancellationToken, reportProgress);
+							return StlProcessing.Save(mesh, meshPathAndFileName, cancellationToken, outputInfo);
+						}
 
 					case ".AMF":
 						outputInfo.ReportProgress = reportProgress;
@@ -585,9 +650,19 @@ namespace MatterHackers.DataConverters3D
 
 					case ".3MF":
 #if DEBUG
-						throw new NotImplementedException();
+						// create the file
+						var threeMfFile = new ThreeMfFile();
+                        // add the thumnail
+                        // add ThreeMfModel
+						foreach(var child in item.DescendantsAndSelf())
+						{
+							// save all the meshes and 
+						}
+
+						// save the mcx file into the archive
+                        threeMfFile.Save(meshPathAndFileName);
 #endif
-						return false;
+                        return false;
 
 					case ".OBJ":
 						outputInfo.ReportProgress = reportProgress;
@@ -603,42 +678,86 @@ namespace MatterHackers.DataConverters3D
 			}
 		}
 
-		private static Mesh DoMergeAndTransform(IObject3D item, MeshOutputSettings outputInfo, CancellationToken cancellationToken)
+		/// <summary>
+		/// This is used exclusively while exporting STLs and needs to account for holes , solids, support, wipe towers and fuzzy objects
+		/// </summary>
+		/// <param name="item"></param>
+		/// <param name="outputInfo"></param>
+		/// <param name="cancellationToken"></param>
+		/// <param name="reportProgress"></param>
+		/// <returns></returns>
+		private static Mesh DoMergeAndTransform(IObject3D item,
+			MeshOutputSettings outputInfo,
+			CancellationToken cancellationToken,
+			Action<double, string> reportProgress = null)
 		{
-			var visibleMeshes = item.VisibleMeshes().Where((i) => i.WorldPersistable());
-			if (visibleMeshes.Count() == 1)
+			var persistable = item.VisibleMeshes().Where((i) => i.WorldPersistable());
+
+			if (outputInfo.CsgOptionState == MeshOutputSettings.CsgOption.DoCsgMerge)
 			{
-				var first = visibleMeshes.First();
-				if (first.WorldMatrix() == Matrix4X4.Identity)
+				var solidsToUnion = persistable.Where((i) => i.WorldOutputType() == PrintOutputTypes.Default || i.WorldOutputType() == PrintOutputTypes.Solid);
+
+				var holesToSubtract = persistable.Where((i) => i.WorldOutputType() == PrintOutputTypes.Hole);
+
+				if (holesToSubtract.Any())
 				{
-					return first.Mesh;
+					// union every solid (non-hole, not support structures)
+					var solidsObject = new Object3D()
+					{
+						Mesh = CombineParticipants(item, solidsToUnion, cancellationToken, (ratio, message) =>
+						{
+							reportProgress?.Invoke(Util.GetRatio(0, .33, ratio), null);
+						})
+					};
+
+					// union every hole
+					var holesObject = new Object3D()
+					{
+						Mesh = CombineParticipants(item, holesToSubtract, cancellationToken, (ratio, message) =>
+                        {
+                            reportProgress?.Invoke(Util.GetRatio(.33, .66, ratio), null);
+                        })
+                    };
+
+					// subtract all holes from all solids
+
+					var result = DoSubtract(item, new IObject3D[] { solidsObject }, 
+						new IObject3D[] { holesObject }, 
+						(ratio, message) =>
+						{
+							reportProgress?.Invoke(Util.GetRatio(.66, 1, ratio), null);
+						}, cancellationToken);
+
+					return result.First().Mesh;
 				}
+				else // we only have meshes to union
+				{
+					// union every solid (non-hole, not support structures)
+					return CombineParticipants(item, solidsToUnion, cancellationToken, (ratio, message) =>
+					{
+						reportProgress?.Invoke(ratio, null);
+					});
+                }
 			}
-
-			var allPolygons = new Mesh();
-
-			foreach (var rawItem in visibleMeshes)
+			else
 			{
-				var mesh = rawItem.Mesh.Copy(cancellationToken);
-				mesh.Transform(rawItem.WorldMatrix());
-				if (outputInfo.CsgOptionState == MeshOutputSettings.CsgOption.DoCsgMerge)
+				var allPolygons = new Mesh();
+				foreach (var rawItem in persistable)
 				{
-					allPolygons = CsgOperations.Union(allPolygons, mesh, null, cancellationToken);
-				}
-				else
-				{
+					var mesh = rawItem.Mesh.Copy(cancellationToken);
+					mesh.Transform(rawItem.WorldMatrix());
 					allPolygons.CopyFaces(mesh);
 				}
+                
+				return allPolygons;
 			}
-
-			return allPolygons;
 		}
 
-		/// <summary>
-		/// Called when loading existing content and needing to bypass the clearing of MeshPath that normally occurs in the this.Mesh setter
-		/// </summary>
-		/// <param name="mesh">The loaded mesh to assign this instance</param>
-		public void SetMeshDirect(Mesh mesh)
+        /// <summary>
+        /// Called when loading existing content and needing to bypass the clearing of MeshPath that normally occurs in the this.Mesh setter
+        /// </summary>
+        /// <param name="mesh">The loaded mesh to assign this instance</param>
+        public void SetMeshDirect(Mesh mesh)
 		{
 			lock (locker)
 			{
@@ -985,7 +1104,7 @@ namespace MatterHackers.DataConverters3D
 					{
 						// Get the trace data for the local mesh
 						// First create trace data that builds fast but traces slow
-						var simpleTraceData = processingMesh.CreateBVHData(null, Matrix4X4.Identity, BvhCreationOptions.FavorFastConstruction);
+						var simpleTraceData = processingMesh.CreateBVHData(BvhCreationOptions.SingleUnboundCollection);
 						if (simpleTraceData != null)
 						{
 							try
@@ -1019,7 +1138,7 @@ namespace MatterHackers.DataConverters3D
 				}
 
 				// Wrap with a BVH
-				traceData = BoundingVolumeHierarchy.CreateNewHierachy(traceables, BvhCreationOptions.FavorFastConstruction);
+				traceData = BoundingVolumeHierarchy.CreateNewHierachy(traceables, BvhCreationOptions.SingleUnboundCollection);
 				tracedHashCode = hashCode;
 			}
 
@@ -1055,7 +1174,8 @@ namespace MatterHackers.DataConverters3D
 				new JsonSerializerSettings
 				{
 					ContractResolver = new IObject3DContractResolver(),
-					NullValueHandling = NullValueHandling.Ignore
+					NullValueHandling = NullValueHandling.Ignore,
+					MaxDepth = MaxJsonDepth
 				}));
 		}
 
@@ -1211,6 +1331,250 @@ namespace MatterHackers.DataConverters3D
 			name += CalculateName(setB, bSeparator);
 
 			return name;
+		}
+
+		public static List<List<(Mesh mesh, Matrix4X4 matrix, AxisAlignedBoundingBox aabb)>> GetTouchingMeshes(IObject3D rootObject, IEnumerable<IObject3D> participants)
+		{
+			void AddAllTouching(List<(Mesh mesh, Matrix4X4 matrix, AxisAlignedBoundingBox aabb)> touching,
+				List<(Mesh mesh, Matrix4X4 matrix, AxisAlignedBoundingBox aabb)> available)
+			{
+				// add the frirst item
+				touching.Add(available[available.Count - 1]);
+				available.RemoveAt(available.Count - 1);
+
+				var indexBeingChecked = 0;
+
+				// keep adding items until we have checked evry item in the the touching list
+				while (indexBeingChecked < touching.Count
+					&& available.Count > 0)
+				{
+					// look for a aabb that intersects any aabb in the set
+					for (int i = available.Count - 1; i >= 0; i--)
+					{
+						if (touching[indexBeingChecked].aabb.Intersects(available[i].aabb))
+						{
+							touching.Add(available[i]);
+							available.RemoveAt(i);
+						}
+					}
+
+					indexBeingChecked++;
+				}
+			}
+
+			var allItems = participants.Select(i =>
+			{
+				var mesh = i.Mesh.Copy(CancellationToken.None);
+				var matrix = i.WorldMatrix(rootObject);
+				var aabb = mesh.GetAxisAlignedBoundingBox(matrix);
+				return (mesh, matrix, aabb);
+			}).ToList();
+
+			var touchingSets = new List<List<(Mesh mesh, Matrix4X4 matrix, AxisAlignedBoundingBox aabb)>>();
+
+			while (allItems.Count > 0)
+			{
+				var touchingSet = new List<(Mesh mesh, Matrix4X4 matrix, AxisAlignedBoundingBox aabb)>();
+				touchingSets.Add(touchingSet);
+				AddAllTouching(touchingSet, allItems);
+			}
+
+			return touchingSets;
+		}
+
+		public static IEnumerable<IObject3D> DoSubtract(IObject3D rootObject,
+			IEnumerable<IObject3D> keepItems,
+			IEnumerable<IObject3D> removeItems,
+			Action<double, string> reporter,
+			CancellationToken cancellationToken,
+			ProcessingModes processingMode = ProcessingModes.Polygons,
+			ProcessingResolution inputResolution = ProcessingResolution._64,
+			ProcessingResolution outputResolution = ProcessingResolution._64)
+		{
+			var results = new List<IObject3D>();
+			if (keepItems?.Any() == true)
+			{
+				if (removeItems?.Any() == true)
+				{
+					var totalOperations = removeItems.Count() * keepItems.Count();
+					double amountPerOperation = 1.0 / totalOperations;
+					double ratioCompleted = 0;
+
+					foreach (var keep in keepItems)
+					{
+#if false
+						var items = removeItems.Select(i => (i.Mesh, i.WorldMatrix(rootObject))).ToList();
+						items.Insert(0, (keep.Mesh, keep.Matrix));
+						var resultsMesh = BooleanProcessing.DoArray(items,
+							CsgModes.Subtract,
+							processingMode,
+							inputResolution,
+							outputResolution,
+							reporter,
+							cancellationToken);
+#else
+						var resultsMesh = keep.Mesh;
+						var keepWorldMatrix = keep.Matrix;
+						if (rootObject != null)
+						{
+							keepWorldMatrix = keep.WorldMatrix(rootObject);
+						}
+
+						foreach (var remove in removeItems)
+						{
+							var removeWorldMatrix = remove.Matrix;
+							if (rootObject != null)
+							{
+								removeWorldMatrix = remove.WorldMatrix(rootObject);
+							}
+
+							resultsMesh = BooleanProcessing.Do(resultsMesh,
+								keepWorldMatrix,
+								// other mesh
+								remove.Mesh,
+								removeWorldMatrix,
+								// operation type
+								CsgModes.Subtract,
+								processingMode,
+								inputResolution,
+								outputResolution,
+								// reporting
+								reporter,
+								amountPerOperation,
+								ratioCompleted,
+								cancellationToken);
+
+							// after the first time we get a result the results mesh is in the right coordinate space
+							keepWorldMatrix = Matrix4X4.Identity;
+
+							// report our progress
+							ratioCompleted += amountPerOperation;
+							reporter?.Invoke(ratioCompleted, null);
+						}
+
+#endif
+						// store our results mesh
+						var resultsItem = new Object3D()
+						{
+							Mesh = resultsMesh,
+							Visible = false,
+							OwnerID = keep.ID
+						};
+
+						// copy all the properties but the matrix
+						if (rootObject != null)
+						{
+							resultsItem.CopyWorldProperties(keep, rootObject, Object3DPropertyFlags.All & (~(Object3DPropertyFlags.Matrix | Object3DPropertyFlags.Visible)));
+						}
+						else
+						{
+							resultsItem.CopyProperties(keep, Object3DPropertyFlags.All & (~(Object3DPropertyFlags.Matrix | Object3DPropertyFlags.Visible)));
+						}
+
+						// and add it to this
+						results.Add(resultsItem);
+					}
+				}
+			}
+
+			return results;
+		}
+
+		public static Mesh CombineParticipants(IObject3D rootObject,
+			IEnumerable<IObject3D> participants,
+			CancellationToken cancellationToken,
+			Action<double, string> reporter = null,
+			ProcessingModes processingMode = ProcessingModes.Polygons,
+			ProcessingResolution inputResolution = ProcessingResolution._64,
+			ProcessingResolution outputResolution = ProcessingResolution._64)
+		{
+			List<List<(Mesh mesh, Matrix4X4 matrix, AxisAlignedBoundingBox aabb)>> touchingSets = GetTouchingMeshes(rootObject, participants);
+
+			var totalOperations = touchingSets.Sum(t => t.Count);
+
+			double amountPerOperation = 1.0 / totalOperations;
+			double ratioCompleted = 0;
+
+			var setMeshes = new List<Mesh>();
+			foreach (var set in touchingSets)
+			{
+				var setMesh = set.First().Item1;
+				var keepWorldMatrix = set.First().matrix;
+
+				if (set.Count > 1)
+				{
+#if true
+					setMesh = BooleanProcessing.DoArray(set.Select(i => (i.mesh, i.matrix)),
+						CsgModes.Union,
+						processingMode,
+						inputResolution,
+						outputResolution,
+						reporter,
+						cancellationToken);
+#else
+
+                    bool first = true;
+                    foreach (var next in set)
+                    {
+                        if (first)
+                        {
+                            first = false;
+                            continue;
+                        }
+
+                        setMesh = BooleanProcessing.Do(setMesh,
+                            keepWorldMatrix,
+                            // other mesh
+                            next.mesh,
+                            next.matrix,
+                            // operation type
+                            CsgModes.Union,
+                            processingMode,
+                            inputResolution,
+                            outputResolution,
+                            // reporting
+                            reporter,
+                            amountPerOperation,
+                            ratioCompleted,
+                            progressStatus,
+                            cancellationToken);
+
+                        // after the first time we get a result the results mesh is in the right coordinate space
+                        keepWorldMatrix = Matrix4X4.Identity;
+
+                        // report our progress
+                        ratioCompleted += amountPerOperation;
+                        progressStatus.Progress0To1 = ratioCompleted;
+                        reporter?.Report(progressStatus);
+                    }
+#endif
+
+					setMeshes.Add(setMesh);
+				}
+				else
+				{
+					setMesh.Transform(keepWorldMatrix);
+					// report our progress
+					ratioCompleted += amountPerOperation;
+					reporter?.Invoke(ratioCompleted, null);
+					setMeshes.Add(setMesh);
+				}
+			}
+
+			Mesh resultsMesh = null;
+			foreach (var setMesh in setMeshes)
+			{
+				if (resultsMesh == null)
+				{
+					resultsMesh = setMesh;
+				}
+				else
+				{
+					resultsMesh.CopyAllFaces(setMesh, Matrix4X4.Identity);
+				}
+			}
+
+			return resultsMesh;
 		}
 	}
 

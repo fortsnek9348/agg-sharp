@@ -32,127 +32,187 @@ using System.Collections.Generic;
 
 namespace ClipperLib
 {
-	using Polygon = List<IntPoint>;
-	using Polygons = List<List<IntPoint>>;
+    using Polygon = List<IntPoint>;
+    using Polygons = List<List<IntPoint>>;
 
-	public static class PolygonsExtensions
-	{
-		public static Polygons CombinePolygons(this Polygons aPolys, Polygons bPolys, ClipType clipType, PolyFillType fillType = PolyFillType.pftEvenOdd)
-		{
-			var clipper = new Clipper();
-			clipper.AddPaths(aPolys, PolyType.ptSubject, true);
-			clipper.AddPaths(bPolys, PolyType.ptClip, true);
+    public static class PolygonsExtensions
+    {
+        public static Polygons CombinePolygons(this Polygons aPolys, Polygons bPolys, ClipType clipType, PolyFillType fillType = PolyFillType.pftEvenOdd)
+        {
+            var clipper = new Clipper();
+            clipper.AddPaths(aPolys, PolyType.ptSubject, true);
+            clipper.AddPaths(bPolys, PolyType.ptClip, true);
 
-			var outputPolys = new Polygons();
-			clipper.Execute(clipType, outputPolys, fillType);
-			return outputPolys;
-		}
+            var outputPolys = new Polygons();
+            clipper.Execute(clipType, outputPolys, fillType);
+            return outputPolys;
+        }
 
-		public static Polygons CreateFromString(string polygonsPackedString, double scale = 1)
-		{
-			Polygon SinglePolygon(string polygonString)
-			{
-				var poly = new Polygon();
-				string[] intPointData = polygonString.Split(',');
-				int increment = 2;
-				for (int i = 0; i < intPointData.Length - 1; i += increment)
-				{
-					string elementX = intPointData[i];
-					string elementY = intPointData[i + 1];
-					var nextIntPoint = new IntPoint(double.Parse(elementX) * scale,
-						double.Parse(elementY) * scale);
-					poly.Add(nextIntPoint);
-				}
+        public static Polygons CreateFromString(string polygonsPackedString, double scale = 1)
+        {
+            Polygon SinglePolygon(string polygonString)
+            {
+                var poly = new Polygon();
+                string[] intPointData = polygonString.Split(',');
+                int increment = 2;
+                for (int i = 0; i < intPointData.Length - 1; i += increment)
+                {
+                    var nextIntPoint = new IntPoint(GetDouble(intPointData[i], scale), GetDouble(intPointData[i + 1], scale));
+                    poly.Add(nextIntPoint);
+                }
 
-				return poly;
-			}
+                return poly;
+            }
 
-			Polygons output = new Polygons();
-			string[] polygons = polygonsPackedString.Split('|');
-			foreach (string polygonString in polygons)
-			{
-				Polygon nextPoly = SinglePolygon(polygonString);
-				if (nextPoly.Count > 0)
-				{
-					output.Add(nextPoly);
-				}
-			}
+            Polygons output = new Polygons();
+            string[] polygons = polygonsPackedString.Split('|');
+            foreach (string polygonString in polygons)
+            {
+                Polygon nextPoly = SinglePolygon(polygonString);
+                if (nextPoly.Count > 0)
+                {
+                    output.Add(nextPoly);
+                }
+            }
 
-			return output;
-		}
+            return output;
+        }
 
-		public static RectangleDouble GetBounds(this Polygons polys)
-		{
-			RectangleDouble bounds = RectangleDouble.ZeroIntersection;
-			foreach (var poly in polys)
-			{
-				bounds.ExpandToInclude(poly.GetBounds());
-			}
+        public static RectangleDouble GetBounds(this Polygons polys)
+        {
+            RectangleDouble bounds = RectangleDouble.ZeroIntersection;
+            foreach (var poly in polys)
+            {
+                bounds.ExpandToInclude(poly.GetBounds());
+            }
 
-			return bounds;
-		}
+            return bounds;
+        }
 
-		public static Polygons Offset(this Polygons polygons, double distance)
-		{
-			var offseter = new ClipperOffset();
-			offseter.AddPaths(polygons, JoinType.jtRound, EndType.etClosedPolygon);
-			var solution = new Polygons();
-			offseter.Execute(ref solution, distance);
+        public static RectangleLong GetBoundsLong(this Polygons polys)
+        {
+            RectangleLong bounds = RectangleLong.ZeroIntersection;
+            foreach (var poly in polys)
+            {
+                bounds.ExpandToInclude(poly.GetBoundsLong());
+            }
 
-			return solution;
-		}
+            return bounds;
+        }
 
-		public static Polygons Rotate(this Polygons polys, double radians)
-		{
-			var output = new Polygons(polys.Count);
-			foreach (var poly in polys)
-			{
-				output.Add(poly.Rotate(radians));
-			}
+        public static double Length(this Polygons polygons, bool areClosed = true)
+        {
+            double length = 0;
+            for (int i = 0; i < polygons.Count; i++)
+            {
+                length += polygons[i].Length(areClosed);
+            }
 
-			return output;
-		}
+            return length;
+        }
 
-		public static Polygons Scale(this Polygons polys, double scaleX, double scaleY)
-		{
-			var output = new Polygons(polys.Count);
-			foreach (var poly in polys)
-			{
-				output.Add(poly.Scale(scaleX, scaleY));
-			}
+        public static Polygons Offset(this Polygons polygons, double distance, JoinType joinType)
+        {
+            var offseter = new ClipperOffset();
+            offseter.AddPaths(polygons, joinType, EndType.etClosedPolygon);
+            var solution = new Polygons();
+            offseter.Execute(ref solution, distance);
 
-			return output;
-		}
+            return solution;
+        }
 
-		public static Polygons Subtract(this Polygons polygons, Polygons other)
-		{
-			return polygons.CombinePolygons(other, ClipType.ctDifference);
-		}
+        public static void PolyTreeToPolygonSets(this Polygons inputPolygons, PolyNode node, List<Polygons> ret)
+        {
+            for (int n = 0; n < node.ChildCount; n++)
+            {
+                PolyNode child = node.Childs[n];
+                var outputPolygons = new Polygons();
+                outputPolygons.Add(child.Contour);
+                for (int i = 0; i < child.ChildCount; i++)
+                {
+                    outputPolygons.Add(child.Childs[i].Contour);
+                    inputPolygons.PolyTreeToPolygonSets(child.Childs[i], ret);
+                }
 
-		public static Polygons Subtract(this Polygons polygons, Polygon other)
-		{
-			return polygons.CombinePolygons(new Polygons() { other }, ClipType.ctDifference);
-		}
+                ret.Add(outputPolygons);
+            }
+        }
 
-		public static Polygons Translate(this Polygons polys, double x, double y, double scale = 1)
-		{
-			var output = new Polygons(polys.Count);
-			foreach (var poly in polys)
-			{
-				output.Add(poly.Translate(x, y, scale));
-			}
+        public static Polygons Rotate(this Polygons polys, double radians)
+        {
+            var output = new Polygons(polys.Count);
+            foreach (var poly in polys)
+            {
+                output.Add(poly.Rotate(radians));
+            }
 
-			return output;
-		}
+            return output;
+        }
 
-		public static Polygons Union(this Polygons polygons, Polygons other, PolyFillType fillType = PolyFillType.pftEvenOdd)
-		{
-			return polygons.CombinePolygons(other, ClipType.ctUnion, fillType);
-		}
+        public static Polygons Scale(this Polygons polys, double scaleX, double scaleY)
+        {
+            var output = new Polygons(polys.Count);
+            foreach (var poly in polys)
+            {
+                output.Add(poly.Scale(scaleX, scaleY));
+            }
 
-		public static Polygons Union(this Polygons polygons, Polygon other)
-		{
-			return polygons.CombinePolygons(new Polygons() { other }, ClipType.ctUnion);
-		}
-	}
+            return output;
+        }
+
+        public static List<Polygons> SeparatePolygonGroups(this Polygons polygons)
+        {
+            var ret = new List<Polygons>();
+            var clipper = new Clipper();
+            var polyTree = new PolyTree();
+            clipper.AddPaths(polygons, PolyType.ptSubject, true);
+            clipper.Execute(ClipType.ctUnion, polyTree);
+
+            polygons.PolyTreeToPolygonSets(polyTree, ret);
+            return ret;
+        }
+
+        public static Polygons Subtract(this Polygons polygons, Polygons other)
+        {
+            return polygons.CombinePolygons(other, ClipType.ctDifference);
+        }
+
+        public static Polygons Subtract(this Polygons polygons, Polygon other)
+        {
+            return polygons.CombinePolygons(new Polygons() { other }, ClipType.ctDifference);
+        }
+
+        public static Polygons Translate(this Polygons polys, double x, double y, double scale = 1)
+        {
+            var output = new Polygons(polys.Count);
+            foreach (var poly in polys)
+            {
+                output.Add(poly.Translate(x, y, scale));
+            }
+
+            return output;
+        }
+
+        public static Polygons Union(this Polygons polygons, Polygons other, PolyFillType fillType = PolyFillType.pftEvenOdd)
+        {
+            return polygons.CombinePolygons(other, ClipType.ctUnion, fillType);
+        }
+
+        public static Polygons Union(this Polygons polygons, Polygon other)
+        {
+            return polygons.CombinePolygons(new Polygons() { other }, ClipType.ctUnion);
+        }
+
+        private static double GetDouble(string doubleString, double scale)
+        {
+            // strip leading characters up to and including ':'
+            int colonIndex = doubleString.IndexOf(':');
+            if (colonIndex != -1)
+            {
+                doubleString = doubleString.Substring(colonIndex + 1);
+            }
+
+            return double.Parse(doubleString) * scale;
+        }
+    }
 }

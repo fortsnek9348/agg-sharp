@@ -33,12 +33,11 @@ using MatterHackers.Agg.Image;
 using MatterHackers.GuiAutomation;
 using MatterHackers.VectorMath;
 using NUnit.Framework;
+using TestInvoker;
 
 namespace MatterHackers.Agg.UI.Tests
 {
-#if !__ANDROID__
-	[TestFixture, Category("Agg.UI"), Apartment(ApartmentState.STA), RunInApplicationDomain]
-#endif
+	[TestFixture, Category("Agg.UI"), Apartment(ApartmentState.STA)]
 	public class FlowLayoutTests
 	{
 		public static bool saveImagesForDebug = false;
@@ -107,7 +106,7 @@ namespace MatterHackers.Agg.UI.Tests
 			Assert.IsTrue(bounds.Bottom == marginSize, "Bottom margin is incorrect");
 		}
 #if !__ANDROID__
-		[Test]
+		[Test, ChildProcessTest]
 		public async Task SpacingClearedAfterLoadPositionsCorrectly()
 		{
 			var systemWindow = new SystemWindow(700, 200)

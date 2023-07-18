@@ -56,24 +56,29 @@ namespace MatterHackers.Agg
 	/// </example>
 	public class QuickTimer : IDisposable
 	{
-		private string name;
+        private double minTimeToReport;
+        private string name;
 		private Stopwatch quickTimerTime = Stopwatch.StartNew();
 		private double startTime;
 
-		public QuickTimer(string name)
+		public QuickTimer(string name, double minTimeToReport = 0)
 		{
+			this.minTimeToReport = minTimeToReport;
 			this.name = name;
 			startTime = quickTimerTime.Elapsed.TotalMilliseconds;
 		}
 
 		public void Dispose()
 		{
-			double totalTime = quickTimerTime.Elapsed.TotalMilliseconds - startTime;
-			Debug.WriteLine(name + ": {0:0.0}s".FormatWith(totalTime/1000.0));
+			double totalTime = (quickTimerTime.Elapsed.TotalMilliseconds - startTime) / 1000.0;
+			if (totalTime > minTimeToReport)
+			{
+				Debug.WriteLine(name + ": {0:0.0}s".FormatWith(totalTime));
+			}
 		}
 	}
 
-	public class QuickTimer2 : IDisposable
+	public class QuickTimerReport : IDisposable
 	{
 		private string name;
 		private Stopwatch quickTimerTime = Stopwatch.StartNew();
@@ -81,12 +86,15 @@ namespace MatterHackers.Agg
 
 		private static Dictionary<string, double> timers = new Dictionary<string, double>();
 
-		public QuickTimer2(string name)
+		public QuickTimerReport(string name)
 		{
-			this.name = name;
-			if (!timers.ContainsKey(name))
+			lock (timers)
 			{
-				timers.Add(name, 0);
+				this.name = name;
+				if (!timers.ContainsKey(name))
+				{
+					timers.Add(name, 0);
+				}
 			}
 
 			startTime = quickTimerTime.Elapsed.TotalMilliseconds;
@@ -95,14 +103,47 @@ namespace MatterHackers.Agg
 		public void Dispose()
 		{
 			double totalTime = quickTimerTime.Elapsed.TotalMilliseconds - startTime;
-			timers[name] = timers[name] + totalTime;
+
+			lock (timers)
+			{
+				if (timers.ContainsKey(name))
+				{
+					timers[name] = timers[name] + totalTime;
+				}
+			}
 		}
 
 		public static void Report()
 		{
-			foreach (var kvp in timers)
+			lock (timers)
 			{
-				Debug.WriteLine(kvp.Key + ": {0:0.0}s".FormatWith(kvp.Value / 1000.0));
+				foreach (var kvp in timers)
+				{
+					Debug.WriteLine(kvp.Key + ": {0:0.0}s".FormatWith(kvp.Value / 1000.0));
+				}
+			}
+		}
+
+		public static void ReportAndRestart(Graphics2D drawTo, double x, double y)
+		{
+			lock (timers)
+			{
+				foreach (var kvp in timers)
+				{
+					var text = $"{kvp.Key}: {kvp.Value:0.00}ms";
+					drawTo.DrawString(text, x, y, backgroundColor: Color.White.WithAlpha(210), drawFromHintedCach: true);
+					y -= 18;
+				}
+
+				Restart();
+			}
+		}
+
+		public static void Restart()
+		{
+			lock (timers)
+			{
+				timers.Clear();
 			}
 		}
 	}

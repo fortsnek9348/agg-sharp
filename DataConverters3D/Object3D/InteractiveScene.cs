@@ -35,6 +35,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using MatterHackers.Agg;
 using MatterHackers.Agg.UI;
+using MatterHackers.Agg.VertexSource;
 using MatterHackers.Localizations;
 using MatterHackers.PolygonMesh;
 using MatterHackers.RayTracer;
@@ -170,7 +171,7 @@ namespace MatterHackers.DataConverters3D
 				};
 
 				// Move selected items into a new SelectionGroup
-				this.Children.Modify(list =>
+				_sourceItem.Children.Modify(list =>
 				{
 					foreach (var item in items)
 					{
@@ -243,8 +244,30 @@ namespace MatterHackers.DataConverters3D
 
 		IObject3D _sourceItem  = null;
 
+        private void ValidateSceneStructure()
+		{
+            void ValidateAllChildrenHaveParentSetToParent(IObject3D parent)
+            {
+                foreach (var child in parent.Children)
+                {
+                    if (!child.RebuildLocked
+                        && child != _sourceItem
+						&& child.Parent != parent
+						&& child.Parent.GetType() != typeof(SelectionGroupObject3D))
+                    {
+                        throw new Exception("Child does not have parent set to parent.");
+                    }
 
-		private IObject3D SourceItem
+                    ValidateAllChildrenHaveParentSetToParent(child);
+                }
+            }
+
+            // Check that every childs parent is this recusively
+            ValidateAllChildrenHaveParentSetToParent(_sourceItem);
+        }
+
+
+        private IObject3D SourceItem
 		{
 			get
 			{
@@ -253,6 +276,10 @@ namespace MatterHackers.DataConverters3D
                 {
 					_sourceItem.Matrix = Matrix4X4.Identity;
 				}
+
+#if DEBUG
+				ValidateSceneStructure();
+#endif
 
 				return _sourceItem;
 			}
@@ -290,8 +317,10 @@ namespace MatterHackers.DataConverters3D
 
 		public IObject3D Parent { get => SourceItem.Parent; set => SourceItem.Parent = value; }
 
+		[JsonIgnore]
 		public Color Color { get => SourceItem.Color; set => SourceItem.Color = value; }
 
+		[JsonIgnore]
 		public int MaterialIndex { get => SourceItem.MaterialIndex; set => SourceItem.MaterialIndex = value; }
 
 		public bool Contains(IObject3D item)
@@ -324,32 +353,57 @@ namespace MatterHackers.DataConverters3D
 			return true;
 		}
 
+		[JsonIgnore]
 		public PrintOutputTypes OutputType { get => SourceItem.OutputType; set => SourceItem.OutputType = value; }
 
+		[JsonIgnore]
 		public Matrix4X4 Matrix { get => SourceItem.Matrix; set => SourceItem.Matrix = value; }
 
+		[JsonIgnore]
 		public string TypeName => SourceItem.TypeName;
 
+		public IVertexSource GetVertexSource()
+		{
+			return SourceItem.GetVertexSource();
+		}
+
+		[JsonIgnore]
+		public IVertexSource VertexSource
+        {
+			get;
+			set;
+        }
+        
+		[JsonIgnore]
 		public Mesh Mesh { get => SourceItem.Mesh; set => SourceItem.Mesh = value; }
 
+		[JsonIgnore]
 		public string MeshPath { get => SourceItem.MeshPath; set => SourceItem.MeshPath = value; }
 
+		[JsonIgnore]
 		public string Name { get => SourceItem.Name; set => SourceItem.Name = value; }
 
+		[JsonIgnore]
 		public bool Persistable => SourceItem.Persistable;
 
+		[JsonIgnore]
 		public bool Printable => SourceItem.Printable;
 
+		[JsonIgnore]
 		public bool Visible { get => SourceItem.Visible; set => SourceItem.Visible = value; }
 
 		public string ID { get => SourceItem.ID; set => SourceItem.ID = value; }
 
+		[JsonIgnore]
 		public bool CanEdit => false;
 
+		[JsonIgnore]
 		public bool CanApply => false;
 
+		[JsonIgnore]
 		public bool CanRemove => false;
 
+		[JsonIgnore]
 		public bool DrawSelection { get; set; } = true;
 
 		[JsonIgnore]
@@ -363,7 +417,8 @@ namespace MatterHackers.DataConverters3D
 		{
 			lastSaveUndoHash = UndoBuffer.GetLongHashCode();
 		}
-		
+
+        [JsonIgnore]
 		public bool HasUnsavedChanges
 		{
 			get
@@ -405,7 +460,7 @@ namespace MatterHackers.DataConverters3D
 					}
 				}
 
-				var json = SourceItem.ToJson().Result;
+				var json = await SourceItem.ToJson();
 
 				// Restore the selection after saving
 				foreach (var item in selectedItems)
@@ -493,7 +548,6 @@ namespace MatterHackers.DataConverters3D
 
 			return selectedItems;
 		}
-
-		#endregion
-	}
+        #endregion
+    }
 }

@@ -34,6 +34,7 @@ using System.Threading;
 using MatterHackers.Agg;
 using MatterHackers.Agg.Image;
 using MatterHackers.VectorMath;
+using MIConvexHull;
 
 namespace MatterHackers.PolygonMesh
 {
@@ -266,75 +267,6 @@ namespace MatterHackers.PolygonMesh
 			this.Vertices = newVertices;
 		}
 
-		/// <summary>
-		/// Merge vertices that are less than a given distance appart
-		/// </summary>
-		/// <param name="treatAsSameDistance">The distance to merge vertices</param>
-		public void MergeVertices2(double treatAsSameDistance)
-		{
-			if (Vertices.Count < 2)
-			{
-				return;
-			}
-
-			var sameDistance = new Vector3Float(treatAsSameDistance, treatAsSameDistance, treatAsSameDistance);
-			var tinyDistance = new Vector3Float(.001, .001, .001);
-			// build a bvh tree of all the vertices
-			var nearVertices = new NearVertices(treatAsSameDistance);
-			nearVertices.AddPoints(this.Vertices.Select((v, i) => (i, v)).ToList());
-
-			var newVertices = new List<Vector3Float>(Vertices.Count);
-			var vertexIndexRemaping = Enumerable.Range(0, Vertices.Count).Select(i => -1).ToList();
-			var searchResults = new List<int>();
-			// build up the list of index mapping
-			for (int i = 0; i < Vertices.Count; i++)
-			{
-				// first check if we have already found this vertex
-				if (vertexIndexRemaping[i] == -1)
-				{
-					var vertex = Vertices[i];
-					// remember the new index
-					var newIndex = newVertices.Count;
-					// add it to the vertices we will end up with
-					newVertices.Add(vertex);
-					// clear for new search
-					searchResults.Clear();
-					// find everything close
-					nearVertices.FindNearPositions(vertex, searchResults);
-					// map them to this new vertex
-					foreach (var result in searchResults)
-					{
-						// this vertex has not been mapped
-						if (vertexIndexRemaping[result] == -1)
-						{
-							vertexIndexRemaping[result] = newIndex;
-						}
-					}
-				}
-			}
-
-			// now make a new face list with the merge vertices
-			int GetIndex(int originalIndex)
-			{
-				return vertexIndexRemaping[originalIndex];
-			}
-
-			var newFaces = new FaceList();
-			foreach (var face in Faces)
-			{
-				int iv0 = GetIndex(face.v0);
-				int iv1 = GetIndex(face.v1);
-				int iv2 = GetIndex(face.v2);
-				if (iv0 != iv1 && iv1 != iv2 && iv2 != iv0)
-				{
-					newFaces.Add(iv0, iv1, iv2, newVertices);
-				}
-			}
-
-			this.Faces = newFaces;
-			this.Vertices = newVertices;
-		}
-
         public void CopyAllFaces(Mesh mesh, Matrix4X4 matrix)
         {
 			foreach (var face in mesh.Faces)
@@ -346,11 +278,21 @@ namespace MatterHackers.PolygonMesh
 			}
 		}
 
-		/// <summary>
-		/// Merge vertices that are less than a given distance apart
-		/// </summary>
-		/// <param name="treatAsSameDistance">The distance to merge vertices</param>
-		public void MergeVertices(double treatAsSameDistance)
+		public BvhTree<int> GetVertexBvhTree()
+		{
+            var tinyDistance = new Vector3Float(.001, .001, .001);
+            var vertexBvhTree = TradeOffBvhConstructor<int>.CreateNewHierachy(this.Vertices
+                .Select((v, i) => new BvhTreeItemData<int>(i, new AxisAlignedBoundingBox(v - tinyDistance, v + tinyDistance))).ToList(),
+                DoSimpleSortSize: 10);
+
+			return vertexBvhTree;
+        }
+
+        /// <summary>
+        /// Merge vertices that are less than a given distance apart
+        /// </summary>
+        /// <param name="treatAsSameDistance">The distance to merge vertices</param>
+        public void MergeVertices(double treatAsSameDistance)
 		{
 			if (Vertices.Count < 2)
 			{
@@ -358,11 +300,8 @@ namespace MatterHackers.PolygonMesh
 			}
 
 			var sameDistance = new Vector3Float(treatAsSameDistance, treatAsSameDistance, treatAsSameDistance);
-			var tinyDistance = new Vector3Float(.001, .001, .001);
 			// build a bvh tree of all the vertices
-			var bvhTree = TradeOffBvhConstructor<int>.CreateNewHierachy(this.Vertices
-				.Select((v, i) => new BvhTreeItemData<int>(i, new AxisAlignedBoundingBox(v - tinyDistance, v + tinyDistance))).ToList(),
-				DoSimpleSortSize: 10);
+			var vertexBvhTree = GetVertexBvhTree();
 
 			var newVertices = new List<Vector3Float>(Vertices.Count);
 			var vertexIndexRemaping = Enumerable.Range(0, Vertices.Count).Select(i => -1).ToList();
@@ -381,7 +320,7 @@ namespace MatterHackers.PolygonMesh
 					// clear for new search
 					searchResults.Clear();
 					// find everything close
-					bvhTree.SearchBounds(new AxisAlignedBoundingBox(vertex - sameDistance, vertex + sameDistance), searchResults);
+					vertexBvhTree.SearchBounds(new AxisAlignedBoundingBox(vertex - sameDistance, vertex + sameDistance), searchResults);
 					// map them to this new vertex
 					foreach (var result in searchResults)
 					{
@@ -987,12 +926,12 @@ namespace MatterHackers.PolygonMesh
 			}
 		}
 
-		public static IReadOnlyList<VertexFaceList> NewVertexFaceLists(this Mesh mesh)
+		public static IReadOnlyList<VertexFaceList> GetVertexFaceLists(this Mesh mesh)
 		{
 			return VertexFaceList.CreateVertexFaceList(mesh);
 		}
 
-		public static IReadOnlyList<MeshEdge> NewMeshEdges(this Mesh mesh)
+		public static IReadOnlyList<MeshEdge> GetMeshEdges(this Mesh mesh)
 		{
 			return MeshEdge.CreateMeshEdgeList(mesh);
 		}
@@ -1253,55 +1192,77 @@ namespace MatterHackers.PolygonMesh
 			// return texturedPlane;
 		}
 
-		/// <summary>
-		/// For every T Junction add a vertex to the mesh edge that needs one.
-		/// </summary>
-		/// <param name="mesh">The mesh to repair.</param>
-		public static void RepairTJunctions(this Mesh mesh)
+		public static IEnumerable<MeshEdge> GetNonManifoldEdges(this Mesh mesh)
 		{
-			throw new NotImplementedException();
-			// var nonManifoldEdges = mesh.GetNonManifoldEdges();
-
-			// foreach(MeshEdge edge in nonManifoldEdges)
-			// {
-			// IVertex start = edge.VertexOnEnd[0];
-			// IVertex end = edge.VertexOnEnd[1];
-			// Vector3 normal = (end.Position - start.Position).GetNormal();
-
-			// // Get all the vertices that lay on this edge
-			// foreach (var vertex in mesh.Vertices)
-			// {
-			// // test if it falls on the edge
-			// // split the edge at them
-			// IVertex createdVertex;
-			// MeshEdge createdMeshEdge;
-			// mesh.SplitMeshEdge(edge, out createdVertex, out createdMeshEdge);
-			// createdVertex.Position = vertex.Position;
-			// createdVertex.Normal = vertex.Normal;
-			// mesh.MergeVertices(vertex, createdVertex);
-			// }
-			// }
-
-			// throw new NotImplementedException();
-
-			// and merge the mesh edges that are now manifold
-			// mesh.MergeMeshEdges(CancellationToken.None);
+			foreach (var meshEdge in mesh.GetMeshEdges())
+			{
+				if (meshEdge.Faces.Count() != 2)
+				{
+					yield return meshEdge;
+				}
+			}
 		}
 
-		public static bool IsManifold(this Mesh mesh)
+        /// <summary>
+        /// For every T Junction add a vertex to the mesh edge that needs one.
+        /// </summary>
+        /// <param name="mesh">The mesh to repair.</param>
+        public static void RepairTJunctions(this Mesh mesh)
+        {
+            var nonManifoldEdges = mesh.GetNonManifoldEdges();
+            var vertexBvhTree = mesh.GetVertexBvhTree();
+            var searchResults = new List<int>();
+
+            foreach (MeshEdge edge in nonManifoldEdges)
+            {
+                var start = mesh.Vertices[edge.Vertex0Index];
+                var end = mesh.Vertices[edge.Vertex1Index];
+                Vector3Float normal = (end - start).GetNormal();
+
+                // Get all the vertices that lay on this edge
+				var edgeAabb = new AxisAlignedBoundingBox(start, end);
+				searchResults.Clear();
+
+                vertexBvhTree.SearchBounds(edgeAabb, searchResults);
+                // map them to this new vertex
+                foreach (var result in searchResults)
+                {
+                    // Test if the vertex falls on the edge
+                    Vector3Float edgeDirection = (end - start).GetNormal();
+					var vertex = mesh.Vertices[result];
+                    Vector3Float vertexDirection = (vertex - start).GetNormal();
+                    float dotProduct = edgeDirection.Dot(vertexDirection);
+
+                    if (Math.Abs(dotProduct - 1) < 1e-6f)
+                    {
+                        // If the vertex falls on the edge, split the edge at the vertex
+                        //IVertex createdVertex;
+                        //MeshEdge createdMeshEdge;
+                        //mesh.SplitMeshEdge(edge, out createdVertex, out createdMeshEdge);
+                        //createdVertex.Position = vertex;
+                        //createdVertex.Normal = normal;
+                        //mesh.MergeVertices(vertex, createdVertex);
+                    }
+                }
+            }
+
+            // Merge the vertices for the edges that are now manifold
+            mesh.CleanAndMerge();
+        }
+
+        public static bool IsManifold(this Mesh mesh)
 		{
-			throw new NotImplementedException();
-			// var nonManifoldEdges = mesh.GetNonManifoldEdges();
+            var meshEdgeList = mesh.GetMeshEdges();
 
-			// if(nonManifoldEdges.Count == 0)
-			// {
-			// return true;
-			// }
+            foreach (var meshEdge in meshEdgeList)
+            {
+                if (meshEdge.Faces.Count() != 2)
+                {
+                    return false;
+                }
+            }
 
-			// Every non-manifold edge must have matching non-manifold edge(s) that it lines up with.
-			// If this is true the model is still functionally manifold.
-
-			return false;
-		}
-	}
+            return true;
+        }
+    }
 }

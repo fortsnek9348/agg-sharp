@@ -31,21 +31,85 @@ using System;
 
 namespace MatterHackers.Agg.UI
 {
-	public class FlowLayoutWidget : GuiWidget
-	{
-		private LayoutEngineFlow layoutEngine;
+    public class FlowLayoutWidget : GuiWidget
+    {
+        private LayoutEngineFlow layoutEngine;
 
-		public FlowLayoutWidget(FlowDirection direction = FlowDirection.LeftToRight)
-		{
-			this.HAnchor = HAnchor.Fit;
-			this.VAnchor = VAnchor.Fit;
-			this.LayoutEngine = layoutEngine = new LayoutEngineFlow(direction);
-		}
+        public FlowLayoutWidget(FlowDirection direction = FlowDirection.LeftToRight)
+        {
+            this.HAnchor = HAnchor.Fit;
+            this.VAnchor = VAnchor.Fit;
+            this.LayoutEngine = layoutEngine = new LayoutEngineFlow(direction);
+        }
 
-		public FlowDirection FlowDirection
-		{
-			get => layoutEngine.FlowDirection;
-			set => layoutEngine.FlowDirection = value;
-		}
-	}
+        public FlowDirection FlowDirection
+        {
+            get => layoutEngine.FlowDirection;
+            set => layoutEngine.FlowDirection = value;
+        }
+
+        public static void SetFixedWidthChildrenToLargestMatching(GuiWidget widgetWithFlowLayouts)
+        {
+            bool IsSizeableChild(GuiWidget guiWidget)
+            {
+                return guiWidget.HAnchor != HAnchor.Fit
+                    && guiWidget.HAnchor != HAnchor.Stretch
+                    && guiWidget.HAnchor != HAnchor.MaxFitOrStretch;
+            }
+
+            // find the largest child count of all widgetWithFlowLayouts children
+            int maxChildCount = 0;
+            foreach (var child in widgetWithFlowLayouts.Children)
+            {
+                if (child is FlowLayoutWidget flowLayoutWidget)
+                {
+                    maxChildCount = Math.Max(maxChildCount, flowLayoutWidget.Children.Count);
+                }
+            }
+
+            // keep track of the largest width of each child
+            var largestWidths = new double[maxChildCount];
+
+            // for every child of widgetWithFlowLayouts that is a FlowLayoutWidget
+            foreach (var child in widgetWithFlowLayouts.Children)
+            {
+                if (child is FlowLayoutWidget flowLayoutWidget)
+                {
+                    var index = 0;
+                    // for every child of the flowLayoutWidget that is a GuiWidget
+                    foreach (var flowChild in flowLayoutWidget.Children)
+                    {
+                        // if the child has a fixed width
+                        if (IsSizeableChild(flowChild))
+                        {
+                            // if the width is larger than the largest width for this child
+                            if (flowChild.Width > largestWidths[index])
+                            {
+                                // set the largest width for this child
+                                largestWidths[flowLayoutWidget.Children.IndexOf(flowChild)] = flowChild.Width;
+                            }
+                        }
+                        index++;
+                    }
+                }
+            }
+
+            // for every child of widgetWithFlowLayouts that is a FlowLayoutWidget
+            foreach (var child in widgetWithFlowLayouts.Children)
+            {
+                if (child is FlowLayoutWidget flowLayoutWidget)
+                {
+                    // for every child of the flowLayoutWidget that is a GuiWidget
+                    foreach (var flowChild in flowLayoutWidget.Children)
+                    {
+                        if (IsSizeableChild(flowChild))
+                        {
+                            // set the width to the largest width for this child
+                            flowChild.Width = largestWidths[flowLayoutWidget.Children.IndexOf(flowChild)];
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

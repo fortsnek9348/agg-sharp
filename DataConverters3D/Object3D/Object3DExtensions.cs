@@ -68,9 +68,9 @@ namespace MatterHackers.DataConverters3D
 			// and cancel the current building of any parent that can be canceled
 			foreach (var parent in object3D.Parents())
 			{
-				if (parent is IBuildsOnThread buildsOnThread2)
+				if (parent is IBuildsOnThread buildsOnThread)
 				{
-					buildsOnThread2.CancelBuild();
+					buildsOnThread.CancelBuild();
 				}
 			}
 		}
@@ -95,7 +95,7 @@ namespace MatterHackers.DataConverters3D
 			}
 		}
 
-		public static IObject3D DescendantsAndSelfMultipleChildrenFirstOrSelf(this IObject3D item)
+		public static IObject3D FirstWithMultipleChildrenDescendantsAndSelf(this IObject3D item)
 		{
 			var parentOfMultipleChildren = item.DescendantsAndSelf().Where(i => i.Children.Count > 1).FirstOrDefault() as Object3D;
 			if (parentOfMultipleChildren == null)
@@ -765,24 +765,14 @@ namespace MatterHackers.DataConverters3D
 		/// </summary>
 		/// <param name="mesh">The mesh to add the BVH to.</param>
 		/// <returns>The created BVH tree.</returns>
-		public static ITraceable CreateBVHData(this Mesh mesh)
+		public static ITraceable CreateBVHData(this Mesh mesh, BvhCreationOptions bvhCreationOptions = BvhCreationOptions.BottomUpClustering)
 		{
-			return CreateBVHData(mesh, null, Matrix4X4.Identity);
-		}
+			// test new BvHBuilderAac
+			// BvhBuilderAac.Create(mesh);
 
-		/// <summary>
-		/// Create a bounding volume hierarchy for the give mesh.
-		/// </summary>
-		/// <param name="mesh">The mesh to add the BVH to.</param>
-		/// <param name="material">The tracing material to use.</param>
-		/// <param name="matrix">A transformation to apply to the trace data</param>
-		/// <param name="maxRecursion">The max depth to create the BVH tree.</param>
-		/// <returns>The created BVH tree.</returns>
-		public static ITraceable CreateBVHData(this Mesh mesh, MaterialAbstract material, Matrix4X4 matrix, BvhCreationOptions bvhCreationOptions = BvhCreationOptions.FavorFastTracing)
-		{
 			var allPolys = new List<ITraceable>();
 
-			mesh.AddTraceables(material, matrix, allPolys);
+			mesh.AddTraceables(null, Matrix4X4.Identity, allPolys);
 
 			return BoundingVolumeHierarchy.CreateNewHierachy(allPolys, bvhCreationOptions);
 		}

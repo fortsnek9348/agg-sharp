@@ -20,6 +20,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
 using System.Windows.Forms;
@@ -104,7 +105,10 @@ namespace MatterHackers.Agg.UI
 			}
 
 			this.TitleBarHeight = RectangleToScreen(ClientRectangle).Top - this.Top;
-			this.AllowDrop = true;
+			if (SystemWindow.EnableAllowDrop)
+			{
+				this.AllowDrop = true;
+			}
 
 			string iconPath = File.Exists("application.ico") ?
 				"application.ico" :
@@ -241,7 +245,7 @@ namespace MatterHackers.Agg.UI
 			}
 
 			// use this to debug that windows are drawing and updating.
-			// onPaintCount++;
+			onPaintCount++;
 			// Text = string.Format("Draw {0}, OnPaint {1}", drawCount, onPaintCount);
 		}
 
@@ -293,8 +297,8 @@ namespace MatterHackers.Agg.UI
 			if (AggSystemWindow != null && !AggSystemWindow.HasBeenClosed)
 			{
 				// Call on closing and check if we can close (a "do you want to save" might cancel the close. :).
-				var eventArgs = new ClosingEventArgs();
-				AggSystemWindow.OnClosing(eventArgs);
+				var eventArgs = new ShouldCloseEventArgs();
+				AggSystemWindow.OnShouldClose(eventArgs);
 
 				if (eventArgs.Cancel)
 				{
@@ -541,6 +545,9 @@ namespace MatterHackers.Agg.UI
 
 			systemWindow.AnchorAll();
 
+			// If this isn't true, prepare for deadlocks.
+			System.Diagnostics.Debug.Assert(SynchronizationContext.Current == null || SynchronizationContext.Current is WindowsFormsSynchronizationContext);
+            
 			if (firstWindow)
 			{
 				firstWindow = false;
@@ -552,7 +559,7 @@ namespace MatterHackers.Agg.UI
 				{
 					enableIdleProcessing = true;
 				}
-
+				
 				Application.Run(this);
 			}
 			else if (!SingleWindowMode)
